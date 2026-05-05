@@ -76,13 +76,13 @@ cargo run --release
 
 A few bundled themes are shown below. More are available in [`examples/themes/`](examples/themes/) — copy any `theme.toml` to your platform's theme path to apply it. See [Theming](#theming) for the paths and override rules.
 
-| Catppuccin Mocha | Tokyo Night |
+| Catppuccin Mocha | Navi |
 |---|---|
-| ![Catppuccin Mocha](examples/themes/catppuccin-mocha/screenshot.png) | ![Tokyo Night](examples/themes/tokyo-night/screenshot.png) |
+| <p align="center"><img src="examples/themes/catppuccin-mocha/screenshot.webp" alt="Catppuccin Mocha" width="440"></p> | <p align="center"><img src="examples/themes/navi/screenshot.webp" alt="Navi" width="440"></p> |
 
 | Amber Dusk | Blush Light |
 |---|---|
-| ![Amber Dusk](examples/themes/amber-dusk/screenshot.png) | ![Blush Light](examples/themes/blush-light/screenshot.png) |
+| <p align="center"><img src="examples/themes/amber-dusk/screenshot.webp" alt="Amber Dusk" width="440"></p> | <p align="center"><img src="examples/themes/blush-light/screenshot.webp" alt="Blush Light" width="440"></p> |
 
 ---
 
