@@ -43,14 +43,16 @@ sudo dnf install elio
 
 ### Debian / Ubuntu
 
-Download the `amd64` `.deb` package from the [latest release](https://github.com/elio-fm/elio/releases/latest) and install it with `apt`:
+Configure the official apt repository and install with `apt`:
 
 ```bash
-curl -LO https://github.com/elio-fm/elio/releases/latest/download/elio_amd64.deb
-sudo apt install ./elio_amd64.deb
+curl -fsSL https://elio-fm.github.io/elio-apt/install.sh | sudo sh
+sudo apt install elio
 ```
 
-This does not configure an apt repository. To update elio, re-run the two commands above — they always fetch the latest release.
+Manual repository setup is available in [`elio-apt`](https://github.com/elio-fm/elio-apt). To install without adding a repository, download `elio_amd64.deb` from the [latest release](https://github.com/elio-fm/elio/releases/latest).
+
+The apt repository currently publishes `amd64` packages.
 
 ### Homebrew
 
