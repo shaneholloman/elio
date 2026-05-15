@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-05-15
+
 ### Added
 
 - Added Linux desktop entry metadata and hicolor application icons for packaged installs, allowing desktop launchers to discover elio as a terminal file manager. ([#67])
-- Added `amd64` Debian package assets to GitHub releases, including the Linux desktop entry and hicolor application icons for launcher integration.
+- Added `amd64` Debian package assets and official apt repository publishing for Debian/Ubuntu installs, including the Linux desktop entry and hicolor application icons in the package.
 
 ## [1.5.0] - 2026-05-14
 
@@ -131,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/elio-fm/elio/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/elio-fm/elio/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/elio-fm/elio/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/elio-fm/elio/compare/v1.2.0...v1.3.0

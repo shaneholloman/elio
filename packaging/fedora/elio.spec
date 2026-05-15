@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.5.0
+%global fallback_version 1.5.1
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,10 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri May 15 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.5.1-1
+- Add Linux desktop entry metadata and hicolor application icons
+- Add amd64 Debian package assets and official apt repository publishing
+
 * Thu May 14 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.5.0-1
 - Add zoxide directory jumps
 - Add transparent theme color values and chip text palette control
