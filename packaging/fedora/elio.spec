@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.5.1
+%global fallback_version 1.6.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri May 22 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.6.0-1
+- Add shell-in-current-folder action and bulk opening for selected items
+- Add symlink-aware browser, preview, Places, and theme rendering
+- Improve fuzzy search streaming, scan limits, and symlink coverage
+- Fix quit stalls from special files and large archive previews
+
 * Fri May 15 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.5.1-1
 - Add Linux desktop entry metadata and hicolor application icons
 - Add amd64 Debian package assets and official apt repository publishing

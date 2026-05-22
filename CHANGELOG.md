@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-22
+
 ### Added
 
 - Added `!` to open the user's shell in the current folder and return to elio when the shell exits. ([#112])
@@ -147,7 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/elio-fm/elio/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/elio-fm/elio/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/elio-fm/elio/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/elio-fm/elio/compare/v1.3.0...v1.4.0
