@@ -18,6 +18,7 @@ Snappy, batteries-included terminal file manager with rich previews, inline imag
 - **Grid and list views** — switch with `v`, zoom the grid with `+` / `-`
 - **Fuzzy search** — find folders and files quickly
 - **Zoxide jumps** — jump to frequent directories from your zoxide history
+- **Shell integration** — install cd-on-exit wrappers for bash, zsh, fish, and Nushell
 - **Theming** — full palette and file-class control via `theme.toml`
 
 ---

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-05-30
+
 ### Added
 
 - Added a `terminal-ansi` theme example and support for terminal ANSI colors in `theme.toml`. ([#84])
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Improved mouse double-click behavior when a selection is active.
 - Fixed `o` / `Enter` on Linux and BSD to open default terminal-based apps in the current terminal when opening a single file instead of a separate terminal window. ([#134])
+- Updated `tar` from `0.4.45` to `0.4.46` to address upstream advisory `GHSA-3cv2-h65g-fgmm`. ([#138])
 - Improved popup rendering over image previews, preventing preview content from showing through transparent overlay cells across Kitty/Ghostty, WezTerm/iTerm2, Foot, and Windows Terminal.
 - Fixed WezTerm and iTerm2 inline image previews during terminal resize, keeping previews and popups correctly layered.
 
@@ -166,7 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/elio-fm/elio/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/elio-fm/elio/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/elio-fm/elio/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/elio-fm/elio/compare/v1.4.0...v1.5.0
@@ -194,3 +198,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#125]: https://github.com/elio-fm/elio/issues/125
 [#129]: https://github.com/elio-fm/elio/issues/129
 [#134]: https://github.com/elio-fm/elio/issues/134
+[#138]: https://github.com/elio-fm/elio/pull/138

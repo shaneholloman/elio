@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.6.0
+%global fallback_version 1.7.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat May 30 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.7.0-1
+- Add installable bash, zsh, fish, and Nushell cd-on-exit integration
+- Add terminal ANSI theme support and update example themes
+- Simplify directory preview headers and improve popup/image layering
+- Fix Linux/BSD terminal app opening and selected-item double-click behavior
+
 * Fri May 22 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.6.0-1
 - Add shell-in-current-folder action and bulk opening for selected items
 - Add symlink-aware browser, preview, Places, and theme rendering
