@@ -53,7 +53,12 @@ pub(super) fn parse_epub_rootfile_path(xml: &str) -> Option<String> {
                     if local_name(attribute.key.as_ref()) != "full-path" {
                         continue;
                     }
-                    let value = attribute.decode_and_unescape_value(reader.decoder()).ok()?;
+                    let value = attribute
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .ok()?;
                     let value = value.trim();
                     if !value.is_empty() {
                         return Some(value.to_string());
@@ -79,10 +84,8 @@ pub(super) fn parse_epub_package_document(xml: &str) -> EpubPackageDocument {
                 let tag = local_name(event.name().as_ref());
                 match tag.as_str() {
                     "metadata" | "manifest" => {}
-                    "spine" => {
-                        if package.toc_id.is_none() {
-                            package.toc_id = xml_attribute_value(&event, reader.decoder(), "toc");
-                        }
+                    "spine" if package.toc_id.is_none() => {
+                        package.toc_id = xml_attribute_value(&event, reader.decoder(), "toc");
                     }
                     "item" if stack.last().is_some_and(|section| section == "manifest") => {
                         register_epub_manifest_item(&mut package, &event, reader.decoder());
@@ -94,10 +97,10 @@ pub(super) fn parse_epub_package_document(xml: &str) -> EpubPackageDocument {
                         register_epub_meta(&mut package, &event, reader.decoder());
                     }
                     "title" | "subject" | "creator" | "language" | "publisher" | "identifier"
-                    | "date" => {
-                        if stack.last().is_some_and(|section| section == "metadata") {
-                            current_metadata_tag = Some(tag.clone());
-                        }
+                    | "date"
+                        if stack.last().is_some_and(|section| section == "metadata") =>
+                    {
+                        current_metadata_tag = Some(tag.clone());
                     }
                     _ => {}
                 }

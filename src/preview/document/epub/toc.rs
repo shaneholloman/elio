@@ -205,10 +205,10 @@ fn parse_ncx_toc(xml: &str) -> Vec<EpubNavPoint> {
                     _ => {}
                 }
             }
-            Ok(Event::Empty(event)) => {
-                if nav_depth > 0 && local_name(event.name().as_ref()) == "content" {
-                    current_href = xml_attribute_value(&event, reader.decoder(), "src");
-                }
+            Ok(Event::Empty(event))
+                if nav_depth > 0 && local_name(event.name().as_ref()) == "content" =>
+            {
+                current_href = xml_attribute_value(&event, reader.decoder(), "src");
             }
             Ok(Event::Text(text)) => {
                 if in_label
@@ -246,7 +246,9 @@ fn epub_nav_is_toc(
 ) -> bool {
     event.attributes().flatten().any(|attribute| {
         let key = local_name(attribute.key.as_ref());
-        let Ok(value) = attribute.decode_and_unescape_value(decoder) else {
+        let Ok(value) =
+            attribute.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+        else {
             return false;
         };
         let value = value.trim();
