@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-06
+
 ### Added
 
 - Added `restore_from_trash` and function-key bindings such as `F2`, letting restore and rename be configured separately while keeping the default `r` restore behavior in Trash and `r`/`F2` rename behavior elsewhere.
@@ -187,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/elio-fm/elio/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/elio-fm/elio/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/elio-fm/elio/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/elio-fm/elio/compare/v1.5.0...v1.5.1

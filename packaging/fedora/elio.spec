@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.7.0
+%global fallback_version 1.8.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Jun 06 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.8.0-1
+- Add configurable multi-binding key actions, unbinding, modifiers, and named keys
+- Add configurable navigation, browser control, search, history, restore, open-or-enter, and quit-without-cd bindings
+- Warn for unknown key action names while preserving valid bindings
+- Update help overlay labels for configurable bindings
+
 * Sat May 30 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.7.0-1
 - Add installable bash, zsh, fish, and Nushell cd-on-exit integration
 - Add terminal ANSI theme support and update example themes
