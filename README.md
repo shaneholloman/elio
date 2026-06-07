@@ -62,10 +62,10 @@ The apt repository currently publishes `amd64` packages.
 
 ### Homebrew
 
-Install from the Homebrew tap:
+Install from Homebrew:
 
 ```bash
-brew install elio-fm/elio/elio
+brew install elio
 ```
 
 ### Cargo
@@ -76,7 +76,7 @@ Install from crates.io:
 cargo install elio
 ```
 
-`elio` starts in your current working directory by default. Pass a directory path to start there, or a file path to open its parent directory and focus the file, for example `elio ~/Downloads` or `elio ~/Downloads/report.pdf`.
+`elio` starts in your current working directory by default. Pass a file or directory path to open it instead.
 
 > [!TIP]
 > Recommended: use a Nerd Font in your terminal so icons display correctly.
