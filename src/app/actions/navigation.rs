@@ -406,11 +406,17 @@ impl App {
 
     pub(in crate::app) fn open_in_system(&mut self) -> Result<()> {
         #[cfg(all(unix, not(target_os = "macos")))]
-        if self
-            .single_file_open_target_entry()
-            .is_some_and(|entry| self.queue_terminal_default_open_if_needed(&entry))
-        {
-            return Ok(());
+        if let Some(entry) = self.single_file_open_target_entry() {
+            if self.queue_terminal_default_open_if_needed(&entry) {
+                return Ok(());
+            }
+            if !crate::app::open_with::open_with_apps_found_for_entry(&entry) {
+                if self.queue_editor_fallback_open_if_needed(&entry) {
+                    return Ok(());
+                }
+                self.status = "No app found".to_string();
+                return Ok(());
+            }
         }
 
         let targets = self.open_in_system_targets();
@@ -419,8 +425,17 @@ impl App {
 
     fn open_entry_in_system(&mut self, entry: &Entry) -> Result<()> {
         #[cfg(all(unix, not(target_os = "macos")))]
-        if self.queue_terminal_default_open_if_needed(entry) {
-            return Ok(());
+        {
+            if self.queue_terminal_default_open_if_needed(entry) {
+                return Ok(());
+            }
+            if !crate::app::open_with::open_with_apps_found_for_entry(entry) {
+                if self.queue_editor_fallback_open_if_needed(entry) {
+                    return Ok(());
+                }
+                self.status = "No app found".to_string();
+                return Ok(());
+            }
         }
 
         self.open_paths_in_system(vec![entry.path.clone()])
@@ -434,6 +449,20 @@ impl App {
             return false;
         };
 
+        self.queue_terminal_open(app)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn queue_editor_fallback_open_if_needed(&mut self, entry: &Entry) -> bool {
+        let Some(app) = crate::app::open_with::editor_fallback_app_for_entry(entry) else {
+            return false;
+        };
+
+        self.queue_terminal_open(app)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn queue_terminal_open(&mut self, app: crate::app::state::OpenWithApp) -> bool {
         self.pending_terminal_task = Some(crate::app::PendingTerminalTask::Command {
             program: app.program,
             args: app.args,
