@@ -268,9 +268,6 @@ impl App {
                     self.move_by_keyboard(1);
                 } else if let Some(entry) = self.selected_entry().filter(|entry| entry.is_dir()) {
                     self.set_dir(entry.path.clone())?;
-                } else {
-                    let open_key = crate::config::keys().open_or_enter.to_string();
-                    self.status = format!("Press {open_key} to open files");
                 }
             }
             Action::ScrollPreviewLeft => {

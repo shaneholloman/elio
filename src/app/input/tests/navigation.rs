@@ -64,7 +64,7 @@ fn right_arrow_does_not_open_selected_file_in_list_view() {
         app.selected_entry().map(|entry| entry.path.as_path()),
         Some(file_path.as_path())
     );
-    assert_eq!(app.status_message(), "Press Enter to open files");
+    assert_eq!(app.status_message(), "");
 
     fs::remove_dir_all(root).expect("failed to remove temp root");
 }
