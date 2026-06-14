@@ -676,12 +676,20 @@ pub(crate) enum ChooserExit {
     Cancelled,
 }
 
+pub(in crate::app) struct GitRuntime {
+    pub(in crate::app) token: u64,
+    pub(in crate::app) cwd: PathBuf,
+    pub(in crate::app) branch: Option<String>,
+    pub(in crate::app) dirty: bool,
+}
+
 pub struct App {
     pub(crate) navigation: NavigationState,
     pub(in crate::app) preview: PreviewRuntime,
     pub(crate) overlays: OverlayState,
     pub(in crate::app) jobs: JobRuntime,
     pub(in crate::app) input: InputRuntime,
+    pub(in crate::app) git: GitRuntime,
     pub(in crate::app) status: String,
     pub(crate) should_quit: bool,
     pub(crate) should_change_directory_on_quit: bool,
@@ -806,6 +814,12 @@ impl App {
                 last_selection_change_at: Instant::now(),
                 // Initialize to far past so the first keypress is always Immediate.
                 last_key_nav_at: Instant::now() - Duration::from_secs(1),
+            },
+            git: GitRuntime {
+                token: 0,
+                cwd: PathBuf::new(),
+                branch: None,
+                dirty: false,
             },
             status: String::new(),
             should_quit: false,
