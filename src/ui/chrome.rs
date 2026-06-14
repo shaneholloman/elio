@@ -110,9 +110,10 @@ pub(super) fn render_toolbar(
 }
 
 const STATUS_MIN_LEFT_WIDTH: u16 = 24;
-const STATUS_IDLE_RIGHT_WIDTH: u16 = 34;
 const STATUS_RIGHT_PADDING: usize = 2;
 const GIT_BRANCH_MAX_WIDTH: usize = 24;
+const FOOTER_MIN_NAME_WIDTH: usize = 6;
+const FOOTER_MIN_GIT_BRANCH_WIDTH: usize = 3;
 
 pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palette) {
     helpers::fill_area(frame, area, palette.chrome, palette.text);
@@ -126,11 +127,7 @@ pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, palett
         ])
         .split(area);
 
-    let right_text = if status_message.is_empty() {
-        status_idle_hint().to_string()
-    } else {
-        helpers::clamp_label(status_message, sections[1].width as usize)
-    };
+    let right_text = helpers::clamp_label(status_message, sections[1].width as usize);
     let clip = app.clipboard_info();
     let sel_count = app.selection_count();
     let paste_prog = app.paste_progress();
@@ -227,25 +224,26 @@ pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, palett
             spans.push(Span::raw("  "));
         }
 
-        let git_label = app.git_branch().map(|branch| {
-            let branch = helpers::truncate_middle(branch, GIT_BRANCH_MAX_WIDTH);
-            if app.git_dirty() {
-                format!(" {branch} *")
-            } else {
-                format!(" {branch}")
-            }
+        let available_after_chips = sections[0].width.saturating_sub(chips_width) as usize;
+        let summary = app.selection_summary();
+        let desired_summary_width = helpers::display_width(&summary).min(available_after_chips);
+        let git_label = app.git_branch().and_then(|branch| {
+            git_label_for_width(
+                branch,
+                app.git_dirty(),
+                available_after_chips
+                    .saturating_sub(desired_summary_width)
+                    .saturating_sub(helpers::display_width(" │ ")),
+            )
         });
         let git_width = git_label
             .as_deref()
             .map(|label| helpers::display_width(" │ ") + helpers::display_width(label))
-            .unwrap_or(0) as u16;
+            .unwrap_or(0);
 
-        let summary_width = sections[0]
-            .width
-            .saturating_sub(chips_width)
-            .saturating_sub(git_width) as usize;
+        let summary_width = available_after_chips.saturating_sub(git_width);
         spans.push(Span::styled(
-            helpers::truncate_middle(&app.selection_summary(), summary_width),
+            compact_footer_summary(&summary, summary_width),
             Style::default()
                 .fg(palette.text)
                 .add_modifier(Modifier::BOLD),
@@ -277,23 +275,46 @@ pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, palett
 fn status_section_width(total_width: u16, status_message: &str) -> u16 {
     let max_right_width = total_width.saturating_sub(STATUS_MIN_LEFT_WIDTH).max(1);
     if status_message.is_empty() {
-        return STATUS_IDLE_RIGHT_WIDTH.min(max_right_width).max(1);
+        return 1;
     }
 
     let desired = helpers::display_width(status_message).saturating_add(STATUS_RIGHT_PADDING);
-    desired
-        .max(STATUS_IDLE_RIGHT_WIDTH as usize)
-        .min(max_right_width as usize)
-        .max(1) as u16
+    desired.min(max_right_width as usize).max(1) as u16
 }
 
-fn status_idle_hint() -> &'static str {
-    "f folders  ^F files  ? help"
+fn compact_footer_summary(summary: &str, width: usize) -> String {
+    let Some((position, name)) = summary.split_once("  ") else {
+        return helpers::truncate_middle(summary, width);
+    };
+    let position_width = helpers::display_width(position);
+    let min_name_width = helpers::display_width(name).min(FOOTER_MIN_NAME_WIDTH);
+    if width <= position_width || width < position_width + 2 + min_name_width {
+        return helpers::truncate_middle(position, width);
+    }
+
+    format!(
+        "{position}  {}",
+        helpers::truncate_middle(name, width - position_width - 2)
+    )
+}
+
+fn git_label_for_width(branch: &str, dirty: bool, width: usize) -> Option<String> {
+    let dirty_suffix = if dirty { " *" } else { "" };
+    let fixed_width = helpers::display_width(" ") + helpers::display_width(dirty_suffix);
+    let branch_width = width.saturating_sub(fixed_width).min(GIT_BRANCH_MAX_WIDTH);
+    if branch_width < FOOTER_MIN_GIT_BRANCH_WIDTH {
+        return None;
+    }
+
+    Some(format!(
+        " {}{dirty_suffix}",
+        helpers::truncate_middle(branch, branch_width)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render_status, status_idle_hint, status_section_width};
+    use super::{compact_footer_summary, git_label_for_width, render_status, status_section_width};
     use crate::{
         app::{App, FrameState},
         ui::{helpers, theme},
@@ -321,13 +342,13 @@ mod tests {
     }
 
     #[test]
-    fn idle_status_keeps_the_compact_help_width() {
-        assert_eq!(status_section_width(100, ""), 34);
+    fn idle_status_keeps_the_message_area_empty() {
+        assert_eq!(status_section_width(100, ""), 1);
     }
 
     #[test]
-    fn real_status_messages_expand_beyond_the_idle_width() {
-        assert!(status_section_width(100, "Clipboard helper not found while copying") > 34);
+    fn real_status_messages_expand_to_fit_their_text() {
+        assert!(status_section_width(100, "Clipboard helper not found while copying") > 1);
     }
 
     #[test]
@@ -337,8 +358,26 @@ mod tests {
     }
 
     #[test]
-    fn idle_hint_stays_unchanged() {
-        assert_eq!(status_idle_hint(), "f folders  ^F files  ? help");
+    fn compact_footer_summary_keeps_position_before_name() {
+        assert_eq!(compact_footer_summary("11/17  CHANGELOG.md", 8), "11/17");
+        assert_eq!(compact_footer_summary("5/17  src/", 10), "5/17  src/");
+        assert_eq!(
+            compact_footer_summary("11/17  CHANGELOG.md", 14),
+            "11/17  CHA….md"
+        );
+    }
+
+    #[test]
+    fn git_label_uses_the_available_width_before_hiding() {
+        assert_eq!(git_label_for_width("chore/footer-cleanup", true, 5), None);
+        assert_eq!(
+            git_label_for_width("chore/footer-cleanup", true, 8).as_deref(),
+            Some(" ch…p *")
+        );
+        assert_eq!(
+            git_label_for_width("chore/footer-cleanup", true, 16).as_deref(),
+            Some(" chore/…eanup *")
+        );
     }
 
     #[test]
