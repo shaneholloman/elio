@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.8.0
+%global fallback_version 1.9.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Jun 17 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.9.0-1
+- Add chooser file mode, file-path startup focusing, and persistent multi-directory selection
+- Add git branch footer state, directory Open With, symlink actions, and default delete shortcuts
+- Add LaTeX, TeX, and BibTeX previews and improve Open With navigation and fallbacks
+- Fix UI freezes, narrow-layout/status behavior, Caps Lock input, and selection/paste edge cases
+
 * Sat Jun 06 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.8.0-1
 - Add configurable multi-binding key actions, unbinding, modifiers, and named keys
 - Add configurable navigation, browser control, search, history, restore, open-or-enter, and quit-without-cd bindings

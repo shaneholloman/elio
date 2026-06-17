@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-17
+
 ### Added
 
 - Added highlighted previews and icons for LaTeX, TeX, and BibTeX files (`.tex`, `.ltx`, `.sty`, `.cls`, `.bib`).
@@ -220,7 +222,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/elio-fm/elio/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/elio-fm/elio/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/elio-fm/elio/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/elio-fm/elio/compare/v1.5.1...v1.6.0
