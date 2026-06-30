@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.9.0
+%global fallback_version 1.10.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Tue Jun 30 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.10.0-1
+- Add native archive extraction for zip, 7z, tar variants, and rar archives
+- Add configurable Go To entries and a current-directory filter
+- Improve Fuzzy Find, Help, Places, Open With, archive previews, and video redraws
+- Fix chooser stdout output, startup video thumbnails, and long-name text editing
+
 * Wed Jun 17 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.9.0-1
 - Add chooser file mode, file-path startup focusing, and persistent multi-directory selection
 - Add git branch footer state, directory Open With, symlink actions, and default delete shortcuts

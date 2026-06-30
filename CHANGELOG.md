@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-06-30
+
 ### Added
 
 - Added native archive extraction for focused `.zip`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2`/`.tbz`, and `.tar.zst`/`.tzst` files, with a configurable `extract_archive` (`e`) shortcut, background progress, cancellation, unique sibling destination folders, and password prompts for encrypted `.7z` and `.zip` archives. ([#90])
@@ -245,7 +247,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Trash and restore support for safer file management workflows.
 - Optional external-tool integrations such as Poppler, ffmpeg, ffprobe, resvg, and 7-Zip for richer previews and metadata.
 
-[Unreleased]: https://github.com/elio-fm/elio/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/elio-fm/elio/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/elio-fm/elio/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/elio-fm/elio/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/elio-fm/elio/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/elio-fm/elio/compare/v1.6.0...v1.7.0
