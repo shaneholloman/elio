@@ -344,6 +344,8 @@ impl App {
                         continue;
                     }
                     if build.done {
+                        let paste_origin =
+                            self.jobs.paste_progress.as_ref().map(|p| p.origin.clone());
                         self.jobs.paste_progress = None;
                         let dest_dir = self
                             .jobs
@@ -372,13 +374,19 @@ impl App {
                             && (nav_target.is_none() || nav_to_dest)
                             && !defer_reload_for_same_dest
                         {
+                            let reselect_path =
+                                if paste_origin == Some(crate::app::state::PasteOrigin::Drop) {
+                                    build.destination_paths.first().cloned()
+                                } else {
+                                    None
+                                };
                             let _ = self.queue_directory_load(PendingDirectoryLoad {
                                 token: 0,
                                 target_cwd: dest_dir,
                                 previous_cwd: self.navigation.cwd.clone(),
                                 previous_selected_path: None,
                                 previous_selection_name: None,
-                                reselect_path: None,
+                                reselect_path,
                                 history_mode: DirectoryHistoryMode::None,
                                 refresh_search: false,
                                 completion: DirectoryLoadCompletion::Status(status),

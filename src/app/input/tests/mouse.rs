@@ -13,6 +13,15 @@ fn left_click(column: u16, row: u16) -> Event {
     })
 }
 
+fn left_release(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
 fn entry_hit(index: usize, row: u16) -> EntryHit {
     EntryHit {
         rect: Rect {
@@ -64,6 +73,46 @@ fn double_click_opens_clicked_file_not_multi_selection() {
     let opened: Vec<_> = opened.lines().map(str::to_owned).collect();
     assert_eq!(opened, vec![beta.display().to_string()]);
     assert_eq!(app.status, "Opened beta.txt");
+
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn double_click_suppresses_drag_from_held_second_click() {
+    let root = temp_path("mouse-double-click-drag-suppression");
+    fs::create_dir_all(&root).expect("failed to create temp root");
+    let beta = root.join("beta.txt");
+    fs::write(&beta, "beta").expect("failed to write beta");
+    let capture = root.join("capture.txt");
+    let _capture_guard = OpenInSystemCaptureGuard::install(capture);
+
+    let mut app = App::new_at(root.clone()).expect("failed to create app");
+    wait_for_directory_load(&mut app);
+    let beta_index = app
+        .navigation
+        .entries
+        .iter()
+        .position(|entry| entry.path == beta)
+        .expect("beta should be visible");
+    app.set_frame_state(FrameState {
+        entry_hits: vec![entry_hit(beta_index, 1)],
+        ..FrameState::default()
+    });
+
+    app.handle_event(left_click(1, 1)).expect("first click");
+    app.handle_event(left_release(1, 1)).expect("first release");
+    app.handle_event(left_click(1, 1))
+        .expect("second click should open clicked file");
+
+    assert!(app.take_drag_export_paths_at(1, 1).is_empty());
+
+    app.handle_event(left_release(1, 1))
+        .expect("second release should clear suppression");
+    app.input.last_click = None;
+    app.handle_event(left_click(1, 1))
+        .expect("next click can start a new drag candidate");
+
+    assert_eq!(app.take_drag_export_paths_at(1, 1), vec![beta]);
 
     fs::remove_dir_all(root).ok();
 }

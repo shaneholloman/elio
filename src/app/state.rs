@@ -101,6 +101,13 @@ pub(super) struct PasteProgress {
     pub(super) completed: usize,
     pub(super) total: usize,
     pub(super) op: ClipOp,
+    pub(super) origin: PasteOrigin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum PasteOrigin {
+    Clipboard,
+    Drop,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +115,7 @@ pub(super) struct QueuedPaste {
     pub(super) dest_dir: PathBuf,
     pub(super) paths: Vec<PathBuf>,
     pub(super) op: ClipOp,
+    pub(super) origin: PasteOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -715,6 +723,9 @@ pub(in crate::app) struct JobRuntime {
 pub(in crate::app) struct InputRuntime {
     pub(in crate::app) frame_state: FrameState,
     pub(in crate::app) last_click: Option<ClickState>,
+    pub(in crate::app) drag_candidate: Option<PathBuf>,
+    pub(in crate::app) drag_paths: Vec<PathBuf>,
+    pub(in crate::app) drag_suppressed_until_up: bool,
     pub(in crate::app) wheel_scroll: ScrollState,
     pub(in crate::app) wheel_profile: WheelProfile,
     pub(in crate::app) last_wheel_target: Option<WheelTarget>,
@@ -879,6 +890,9 @@ impl App {
             input: InputRuntime {
                 frame_state: FrameState::default(),
                 last_click: None,
+                drag_candidate: None,
+                drag_paths: Vec::new(),
+                drag_suppressed_until_up: false,
                 wheel_scroll: ScrollState {
                     horizontal: ScrollLane::new(),
                     vertical: ScrollLane::new(),

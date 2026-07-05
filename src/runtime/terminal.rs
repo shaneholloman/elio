@@ -1,3 +1,7 @@
+use super::kitty_dnd::{
+    KittyDndRuntime, detect_kitty_dnd_runtime, disable_sequence as disable_kitty_dnd_sequence,
+    startup_sequence as kitty_dnd_startup_sequence,
+};
 use anyhow::Result;
 use crossterm::{
     cursor::SetCursorStyle,
@@ -188,7 +192,7 @@ impl Drop for ThreadedWriter {
     }
 }
 
-pub(super) fn init_terminal() -> Result<(AppTerminal, Drainer)> {
+pub(super) fn init_terminal() -> Result<(AppTerminal, Drainer, KittyDndRuntime)> {
     match try_init_terminal() {
         Ok(pair) => Ok(pair),
         Err(error) => {
@@ -198,9 +202,10 @@ pub(super) fn init_terminal() -> Result<(AppTerminal, Drainer)> {
     }
 }
 
-fn try_init_terminal() -> Result<(AppTerminal, Drainer)> {
+fn try_init_terminal() -> Result<(AppTerminal, Drainer, KittyDndRuntime)> {
     enable_raw_mode()?;
     let (mut terminal_output, frame_output) = terminal_output_handles()?;
+    let kitty_dnd = detect_kitty_dnd_runtime();
     execute!(
         terminal_output,
         EnterAlternateScreen,
@@ -225,6 +230,14 @@ fn try_init_terminal() -> Result<(AppTerminal, Drainer)> {
     // Terminals that don't support it ignore this silently.
     write!(terminal_output, "\x1b[>4;1m")?;
 
+    if kitty_dnd.is_enabled() {
+        write!(
+            terminal_output,
+            "{}",
+            kitty_dnd_startup_sequence(kitty_dnd.drag_machine_id())
+        )?;
+    }
+
     terminal_output.flush()?;
     push_keyboard_enhancement_if_supported(&mut terminal_output)?;
 
@@ -236,7 +249,7 @@ fn try_init_terminal() -> Result<(AppTerminal, Drainer)> {
     let mut terminal = Terminal::new(backend)?;
     clear_for_full_repaint(&mut terminal)?;
     terminal.hide_cursor()?;
-    Ok((terminal, drainer))
+    Ok((terminal, drainer, kitty_dnd))
 }
 
 #[cfg(unix)]
@@ -271,8 +284,12 @@ pub(super) fn suspend_terminal(
     terminal: &mut AppTerminal,
     drainer: &Drainer,
     leave_alternate: bool,
+    kitty_dnd: &KittyDndRuntime,
 ) -> Result<()> {
     let backend = terminal.backend_mut();
+    if kitty_dnd.is_enabled() {
+        write!(backend, "{}", disable_kitty_dnd_sequence())?;
+    }
     write!(backend, "\x1b[>4;0m")?;
     write!(backend, "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l")?;
     backend.flush()?;
@@ -299,7 +316,11 @@ pub(super) fn suspend_terminal(
 
 /// Restores the TUI after [`suspend_terminal`].  Forces a full redraw on the
 /// next render cycle so no stale content is left on screen.
-pub(super) fn resume_terminal(terminal: &mut AppTerminal, drainer: &Drainer) -> Result<()> {
+pub(super) fn resume_terminal(
+    terminal: &mut AppTerminal,
+    drainer: &Drainer,
+    kitty_dnd: &KittyDndRuntime,
+) -> Result<()> {
     enable_raw_mode()?;
     {
         // Route restore escapes through the backend so they stay ordered with
@@ -315,6 +336,13 @@ pub(super) fn resume_terminal(terminal: &mut AppTerminal, drainer: &Drainer) -> 
         )?;
         write!(backend, "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h")?;
         write!(backend, "\x1b[>4;1m")?;
+        if kitty_dnd.is_enabled() {
+            write!(
+                backend,
+                "{}",
+                kitty_dnd_startup_sequence(kitty_dnd.drag_machine_id())
+            )?;
+        }
         backend.flush()?;
     }
     drainer.drain();
@@ -324,10 +352,17 @@ pub(super) fn resume_terminal(terminal: &mut AppTerminal, drainer: &Drainer) -> 
     Ok(())
 }
 
-pub(super) fn restore_terminal(terminal: &mut AppTerminal, drainer: &Drainer) -> Result<()> {
+pub(super) fn restore_terminal(
+    terminal: &mut AppTerminal,
+    drainer: &Drainer,
+    kitty_dnd: &KittyDndRuntime,
+) -> Result<()> {
     // Disable in reverse order and do it before leaving the alternate screen so the
     // terminal processes the escape sequences while still in the right mode.
     let backend = terminal.backend_mut();
+    if kitty_dnd.is_enabled() {
+        write!(backend, "{}", disable_kitty_dnd_sequence())?;
+    }
     write!(backend, "\x1b[>4;0m")?; // reset XTSHIFTESCAPE
     write!(backend, "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l")?; // disable mouse modes
     backend.flush()?;
@@ -349,6 +384,7 @@ pub(super) fn restore_terminal(terminal: &mut AppTerminal, drainer: &Drainer) ->
 fn cleanup_terminal_state() -> io::Result<()> {
     if let Ok((mut terminal_output, _)) = terminal_output_handles() {
         let _ = write!(terminal_output, "\x1b[>4;0m");
+        let _ = write!(terminal_output, "{}", disable_kitty_dnd_sequence());
         let _ = write!(
             terminal_output,
             "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l"

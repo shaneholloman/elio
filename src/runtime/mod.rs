@@ -1,9 +1,12 @@
 mod draw;
+mod input;
+mod kitty_dnd;
 mod session_files;
 mod terminal;
 
 use self::{
     draw::draw_terminal_frame,
+    input::{RuntimeInputEvent, RuntimeInputReader},
     session_files::{write_chooser_file_if_requested, write_cwd_file_if_requested},
     terminal::{
         AppTerminal, Drainer, init_terminal, restore_terminal, resume_terminal, suspend_terminal,
@@ -31,11 +34,26 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const ACTIVE_SCROLL_POLL_INTERVAL: Duration = Duration::from_millis(12);
 const WINDOWS_TERMINAL_ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(24);
 const RELATIVE_TIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_INPUT_EVENTS_PER_FRAME: usize = 64;
+const MAX_INPUT_BATCH_DURATION: Duration = Duration::from_millis(4);
 
 #[derive(Debug)]
 struct AppExit {
     final_cwd: Option<PathBuf>,
     chooser: Option<ChooserExit>,
+}
+
+#[derive(Debug, Default)]
+struct PendingDragOut {
+    active: bool,
+    uri_list: Vec<u8>,
+}
+
+impl PendingDragOut {
+    fn reset(&mut self) {
+        self.active = false;
+        self.uri_list.clear();
+    }
 }
 
 pub(crate) fn run_with_startup_state(
@@ -50,16 +68,17 @@ pub(crate) fn run_with_startup_state(
     } = options;
     config::initialize();
     ui::theme::initialize();
-    let (mut terminal, drainer) = init_terminal()?;
+    let (mut terminal, drainer, kitty_dnd) = init_terminal()?;
     let result = run_app(
         &mut terminal,
         &drainer,
+        &kitty_dnd,
         start_dir,
         start_focus,
         reveal_hidden_start_focus,
         chooser_file.is_some(),
     );
-    restore_terminal(&mut terminal, &drainer)?;
+    restore_terminal(&mut terminal, &drainer, &kitty_dnd)?;
     let app_exit = result?;
     if let Some(final_cwd) = app_exit.final_cwd {
         write_cwd_file_if_requested(cwd_file.as_deref(), &final_cwd)?;
@@ -113,6 +132,7 @@ fn apply_zoxide_query_result(app: &mut App, result: zoxide::QueryResult) {
 fn run_app(
     terminal: &mut AppTerminal,
     drainer: &Drainer,
+    kitty_dnd: &kitty_dnd::KittyDndRuntime,
     cwd: Option<PathBuf>,
     start_focus: Option<PathBuf>,
     reveal_hidden_start_focus: bool,
@@ -135,10 +155,24 @@ fn run_app(
     // crossterm and cannot corrupt mouse reporting.
     app.enable_terminal_image_previews();
 
+    let input_reader = match RuntimeInputReader::new(kitty_dnd.is_enabled()) {
+        Ok(reader) => reader,
+        Err(error) => {
+            if kitty_dnd.is_enabled() {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::disable_sequence().as_bytes())?;
+                terminal.backend_mut().flush()?;
+                app.set_status_message(format!("Kitty DND disabled: {error}"));
+            }
+            RuntimeInputReader::Crossterm
+        }
+    };
     let mut dirty = true;
     let mut search_cursor_active = false;
     let mut terminal_focused = true;
     let mut last_relative_time_refresh_at = Instant::now();
+    let mut pending_drag_out = PendingDragOut::default();
 
     loop {
         if app.should_quit {
@@ -276,13 +310,36 @@ fn run_app(
             ],
         );
 
-        if event::poll(poll_interval)? {
+        if let Some(first_input) = read_runtime_input(&input_reader, poll_interval)? {
             // Batch all immediately-available events into one render cycle.
             // This prevents lag when events (especially scroll events from high-frequency
             // terminals) arrive faster than the app can render: instead of one render per
             // event we accumulate all queued events first and render the final state once.
+            let mut next_input = Some(first_input);
+            let batch_started_at = Instant::now();
+            let mut batched_events = 0usize;
             loop {
-                let event = event::read()?;
+                batched_events += 1;
+                let input = match next_input.take() {
+                    Some(input) => input,
+                    None => match try_read_runtime_input(&input_reader)? {
+                        Some(input) => input,
+                        None => break,
+                    },
+                };
+                let input = coalesce_resize_inputs(
+                    &input_reader,
+                    input,
+                    &mut next_input,
+                    &mut batched_events,
+                )?;
+                let Some(event) =
+                    handle_runtime_input(terminal, &mut app, input, &mut pending_drag_out)?
+                else {
+                    dirty = true;
+                    next_input = try_read_runtime_input(&input_reader)?;
+                    continue;
+                };
                 if std::env::var_os("ELIO_LOG_MOUSE").is_some()
                     && let Event::Mouse(m) = &event
                 {
@@ -326,9 +383,12 @@ fn run_app(
                     if needs_render && terminal_focused {
                         dirty = true;
                     }
-                }
-                // Stop batching once there are no more immediately available events.
-                if !event::poll(Duration::ZERO)? {
+                };
+                next_input = try_read_runtime_input(&input_reader)?;
+                if next_input.is_some()
+                    && (batched_events >= MAX_INPUT_EVENTS_PER_FRAME
+                        || batch_started_at.elapsed() >= MAX_INPUT_BATCH_DURATION)
+                {
                     break;
                 }
             }
@@ -342,15 +402,19 @@ fn run_app(
             if let Some(task) = app.pending_terminal_task.take() {
                 let zoxide_result = match task {
                     PendingTerminalTask::Command { program, args } => {
-                        suspend_terminal(terminal, drainer, true)?;
+                        pause_runtime_input(&input_reader, true);
+                        suspend_terminal(terminal, drainer, true, kitty_dnd)?;
                         run_blocking_in_terminal(&program, &args);
-                        resume_terminal(terminal, drainer)?;
+                        resume_terminal(terminal, drainer, kitty_dnd)?;
+                        pause_runtime_input(&input_reader, false);
                         None
                     }
                     PendingTerminalTask::Shell { cwd } => {
-                        suspend_terminal(terminal, drainer, true)?;
+                        pause_runtime_input(&input_reader, true);
+                        suspend_terminal(terminal, drainer, true, kitty_dnd)?;
                         let shell_result = shell::run_in_current_terminal(&cwd);
-                        resume_terminal(terminal, drainer)?;
+                        resume_terminal(terminal, drainer, kitty_dnd)?;
+                        pause_runtime_input(&input_reader, false);
                         match shell_result {
                             Ok(()) => refresh_after_shell(&mut app, &cwd),
                             Err(error) => app.set_status_message(error),
@@ -362,9 +426,11 @@ fn run_app(
                         if let Some(result) = zoxide::preflight(&cwd) {
                             Some(result)
                         } else {
-                            suspend_terminal(terminal, drainer, false)?;
+                            pause_runtime_input(&input_reader, true);
+                            suspend_terminal(terminal, drainer, false, kitty_dnd)?;
                             let result = zoxide::run_query_in_terminal(&cwd);
-                            resume_terminal(terminal, drainer)?;
+                            resume_terminal(terminal, drainer, kitty_dnd)?;
+                            pause_runtime_input(&input_reader, false);
                             Some(result)
                         }
                     }
@@ -400,6 +466,253 @@ fn event_implies_terminal_focus(event: &Event) -> bool {
     matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
 }
 
+fn read_runtime_input(
+    reader: &RuntimeInputReader,
+    timeout: Duration,
+) -> Result<Option<RuntimeInputEvent>> {
+    match reader {
+        RuntimeInputReader::Crossterm => {
+            if event::poll(timeout)? {
+                Ok(Some(RuntimeInputEvent::Terminal(event::read()?)))
+            } else {
+                Ok(None)
+            }
+        }
+        RuntimeInputReader::Custom(reader) => Ok(reader.recv_timeout(timeout)?),
+    }
+}
+
+fn try_read_runtime_input(reader: &RuntimeInputReader) -> Result<Option<RuntimeInputEvent>> {
+    match reader {
+        RuntimeInputReader::Crossterm => {
+            if event::poll(Duration::ZERO)? {
+                Ok(Some(RuntimeInputEvent::Terminal(event::read()?)))
+            } else {
+                Ok(None)
+            }
+        }
+        RuntimeInputReader::Custom(reader) => Ok(reader.try_recv()?),
+    }
+}
+
+fn pause_runtime_input(reader: &RuntimeInputReader, paused: bool) {
+    if let RuntimeInputReader::Custom(reader) = reader {
+        reader.set_paused(paused);
+    }
+}
+
+fn coalesce_resize_inputs(
+    reader: &RuntimeInputReader,
+    input: RuntimeInputEvent,
+    next_input: &mut Option<RuntimeInputEvent>,
+    batched_events: &mut usize,
+) -> Result<RuntimeInputEvent> {
+    let RuntimeInputEvent::Terminal(Event::Resize(mut width, mut height)) = input else {
+        return Ok(input);
+    };
+
+    let started_at = Instant::now();
+    loop {
+        let candidate = if let Some(input) = next_input.take() {
+            Some(input)
+        } else {
+            try_read_runtime_input(reader)?
+        };
+        match candidate {
+            Some(RuntimeInputEvent::Terminal(Event::Resize(w, h))) => {
+                width = w;
+                height = h;
+                *batched_events += 1;
+                if *batched_events >= MAX_INPUT_EVENTS_PER_FRAME
+                    || started_at.elapsed() >= MAX_INPUT_BATCH_DURATION
+                {
+                    break;
+                }
+            }
+            Some(other) => {
+                *next_input = Some(other);
+                break;
+            }
+            None => break,
+        }
+    }
+
+    Ok(RuntimeInputEvent::Terminal(Event::Resize(width, height)))
+}
+
+fn handle_runtime_input(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    input: RuntimeInputEvent,
+    pending_drag_out: &mut PendingDragOut,
+) -> Result<Option<Event>> {
+    match input {
+        RuntimeInputEvent::Terminal(event) => Ok(Some(event)),
+        RuntimeInputEvent::KittyDnd(event) => {
+            handle_kitty_dnd_event(terminal, app, event, pending_drag_out)?;
+            Ok(None)
+        }
+    }
+}
+
+fn handle_kitty_dnd_event(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    event: kitty_dnd::KittyDndEvent,
+    pending_drag_out: &mut PendingDragOut,
+) -> Result<()> {
+    match event {
+        kitty_dnd::KittyDndEvent::DropOffer {
+            mime_index,
+            final_drop,
+        } => {
+            let sequence = if pending_drag_out.active && final_drop {
+                pending_drag_out.reset();
+                app.clear_drag_state();
+                format!(
+                    "{}{}",
+                    kitty_dnd::finish_drop_sequence(false),
+                    kitty_dnd::cancel_drag_sequence()
+                )
+            } else if pending_drag_out.active {
+                kitty_dnd::reject_drop_sequence().to_string()
+            } else if final_drop {
+                kitty_dnd::request_drop_data_sequence(mime_index)
+            } else {
+                kitty_dnd::accept_drop_sequence()
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropData { paths, .. } => {
+            let was_own_drag = pending_drag_out.active;
+            let success = !was_own_drag && !paths.is_empty();
+            if success {
+                app.drop_external_paths(paths)?;
+            } else if was_own_drag {
+                pending_drag_out.reset();
+                app.clear_drag_state();
+            } else {
+                app.set_status_message("Drop contains no local files");
+            }
+            terminal
+                .backend_mut()
+                .write_all(kitty_dnd::finish_drop_sequence(success).as_bytes())?;
+            if was_own_drag {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+            }
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropLeave => {}
+        kitty_dnd::KittyDndEvent::DropDataError {
+            mime_index: _,
+            message,
+        } => {
+            let was_own_drag = pending_drag_out.active;
+            if pending_drag_out.active {
+                pending_drag_out.reset();
+                app.clear_drag_state();
+            }
+            terminal
+                .backend_mut()
+                .write_all(kitty_dnd::finish_drop_sequence(false).as_bytes())?;
+            if was_own_drag {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+            }
+            if !message.is_empty() {
+                app.set_status_message(format!("Drop failed: {message}"));
+            }
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropUnsupported { final_drop } => {
+            let sequence = if final_drop {
+                kitty_dnd::finish_drop_sequence(false)
+            } else {
+                kitty_dnd::reject_drop_sequence()
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DragOffer { x, y } => {
+            if pending_drag_out.active {
+                return Ok(());
+            }
+            let paths = app.take_drag_export_paths_at(x, y);
+            let uri_list = kitty_dnd::uri_list_payload(&paths);
+            if uri_list.is_empty() {
+                pending_drag_out.reset();
+                app.clear_drag_candidate();
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+                terminal.backend_mut().flush()?;
+                return Ok(());
+            }
+
+            let label = drag_icon_label(&paths);
+            let mut sequence = kitty_dnd::agree_drag_either_sequence();
+            sequence.push_str(&kitty_dnd::present_drag_data_sequence(0, &uri_list));
+            sequence.push_str(&kitty_dnd::present_drag_icon_sequence(&label));
+            sequence.push_str(kitty_dnd::start_drag_sequence());
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+
+            pending_drag_out.active = true;
+            pending_drag_out.uri_list = uri_list;
+        }
+        kitty_dnd::KittyDndEvent::DragDataRequested { mime_index } => {
+            let sequence = if pending_drag_out.active && mime_index == 0 {
+                kitty_dnd::send_drag_data_sequence(mime_index, &pending_drag_out.uri_list)
+            } else {
+                kitty_dnd::drag_data_error_sequence(mime_index, "ENOENT")
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DragStarted
+        | kitty_dnd::KittyDndEvent::DragAccepted { mime_index: _ }
+        | kitty_dnd::KittyDndEvent::DragActionChanged { operation: _ }
+        | kitty_dnd::KittyDndEvent::DragDropped => {}
+        kitty_dnd::KittyDndEvent::DragEnded { cancelled: _ } => {
+            pending_drag_out.reset();
+            app.clear_drag_state();
+        }
+        kitty_dnd::KittyDndEvent::DragError { message } => {
+            pending_drag_out.reset();
+            app.clear_drag_state();
+            if !message.is_empty() {
+                app.set_status_message(format!("Kitty DND drag failed: {message}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn drag_icon_label(paths: &[PathBuf]) -> String {
+    const MAX_LABEL_CHARS: usize = 32;
+
+    let label = match paths {
+        [path] => path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "1 item".to_string()),
+        paths => format!("{} items", paths.len()),
+    };
+
+    if label.chars().count() <= MAX_LABEL_CHARS {
+        return label;
+    }
+
+    let mut truncated: String = label.chars().take(MAX_LABEL_CHARS - 3).collect();
+    truncated.push_str("...");
+    truncated
+}
+
 fn event_poll_interval<I>(
     base_poll_interval: Duration,
     terminal_focused: bool,
@@ -423,11 +736,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_SCROLL_POLL_INTERVAL, IDLE_POLL_INTERVAL, event_implies_terminal_focus,
-        event_poll_interval,
+        ACTIVE_SCROLL_POLL_INTERVAL, IDLE_POLL_INTERVAL, drag_icon_label,
+        event_implies_terminal_focus, event_poll_interval,
     };
     use crossterm::event::Event;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     #[test]
     fn event_poll_interval_stays_idle_while_terminal_is_unfocused() {
@@ -484,5 +797,27 @@ mod tests {
         assert!(!event_implies_terminal_focus(&Event::FocusLost));
         assert!(!event_implies_terminal_focus(&Event::FocusGained));
         assert!(!event_implies_terminal_focus(&Event::Resize(80, 24)));
+    }
+
+    #[test]
+    fn drag_icon_label_uses_name_for_single_item_and_count_for_many() {
+        assert_eq!(
+            drag_icon_label(&[PathBuf::from("/tmp/report.pdf")]),
+            "report.pdf"
+        );
+        assert_eq!(
+            drag_icon_label(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]),
+            "2 items"
+        );
+    }
+
+    #[test]
+    fn drag_icon_label_truncates_long_names() {
+        assert_eq!(
+            drag_icon_label(&[PathBuf::from(
+                "/tmp/abcdefghijklmnopqrstuvwxyz0123456789.txt"
+            )]),
+            "abcdefghijklmnopqrstuvwxyz012..."
+        );
     }
 }

@@ -312,6 +312,7 @@ pub(in crate::app) struct PasteRequest {
     pub(in crate::app) dest_dir: PathBuf,
     pub(in crate::app) paths: Vec<PathBuf>,
     pub(in crate::app) op: ClipOp,
+    pub(in crate::app) origin: crate::app::state::PasteOrigin,
 }
 
 #[derive(Debug)]
@@ -322,6 +323,8 @@ pub(in crate::app) struct PasteBuild {
     pub(in crate::app) done: bool,
     /// Populated only when `done = true`.
     pub(in crate::app) status: Option<String>,
+    /// Destination paths actually written by the completed paste/drop.
+    pub(in crate::app) destination_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]

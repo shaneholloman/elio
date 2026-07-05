@@ -55,7 +55,7 @@ impl PastePool {
         let worker = thread::spawn(move || {
             while let Some(request) = PasteShared::pop(&shared_worker) {
                 PasteShared::set_active(&shared_worker, true);
-                let (completed, errors, stopped_early) = run_paste(
+                let (completed, errors, stopped_early, destination_paths) = run_paste(
                     &request,
                     &result_tx,
                     &shared_worker.cancelled,
@@ -63,9 +63,12 @@ impl PastePool {
                 );
                 PasteShared::set_active(&shared_worker, false);
 
-                let verb = match request.op {
-                    ClipOp::Yank => "Copied",
-                    ClipOp::Cut => "Moved",
+                let verb = match request.origin {
+                    crate::app::state::PasteOrigin::Drop => "Dropped",
+                    crate::app::state::PasteOrigin::Clipboard => match request.op {
+                        ClipOp::Yank => "Copied",
+                        ClipOp::Cut => "Moved",
+                    },
                 };
                 let status = if stopped_early {
                     match completed {
@@ -99,6 +102,7 @@ impl PastePool {
                         completed,
                         done: true,
                         status: Some(status),
+                        destination_paths,
                     }))
                     .is_err()
                 {
@@ -170,7 +174,8 @@ impl PasteShared {
 }
 
 /// Execute the paste operation, sending throttled intermediate progress
-/// results through `result_tx`.  Returns `(completed, errors, stopped_early)`.
+/// results through `result_tx`. Returns completed count, errors, cancellation
+/// state, and destination paths actually written.
 ///
 /// `stopped_early` is `true` if the loop was cut short by a cancel flag rather
 /// than running to completion.
@@ -179,8 +184,9 @@ fn run_paste(
     result_tx: &mpsc::Sender<JobResult>,
     cancelled: &AtomicBool,
     cancel_token: &AtomicU64,
-) -> (usize, Vec<String>, bool) {
+) -> (usize, Vec<String>, bool, Vec<PathBuf>) {
     let mut completed = 0usize;
+    let mut destination_paths = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     let mut stopped_early = false;
     // Tracks when we last sent a progress result.  None = never sent, which
@@ -215,6 +221,7 @@ fn run_paste(
             let natural = request.dest_dir.join(file_name);
             if natural == *src {
                 completed += 1;
+                destination_paths.push(natural);
                 if !send_paste_progress(result_tx, request.token, completed, &mut last_progress_at)
                 {
                     break;
@@ -279,6 +286,7 @@ fn run_paste(
 
         if ok {
             completed += 1;
+            destination_paths.push(dest);
         }
 
         if !send_paste_progress(result_tx, request.token, completed, &mut last_progress_at) {
@@ -286,7 +294,7 @@ fn run_paste(
         }
     }
 
-    (completed, errors, stopped_early)
+    (completed, errors, stopped_early, destination_paths)
 }
 
 /// Send a throttled intermediate progress result for the paste worker.
@@ -307,6 +315,7 @@ fn send_paste_progress(
                 completed,
                 done: false,
                 status: None,
+                destination_paths: Vec::new(),
             }))
             .is_ok();
     }
