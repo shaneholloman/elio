@@ -117,7 +117,15 @@ pub(in crate::runtime) fn cancel_drag_sequence() -> &'static str {
 
 pub(in crate::runtime) fn present_drag_icon_sequence(label: &str) -> String {
     // Present a compact text icon payload accepted by Kitty's DND protocol.
-    present_drag_payload_sequence("t=p:x=-1:y=0:X=6:Y=4:o=0", label.as_bytes(), false)
+    present_drag_payload_sequence("t=p:x=-1:y=0:X=6:Y=4:o=1024", label.as_bytes(), false)
+}
+
+pub(in crate::runtime) fn present_drag_icon_png_sequence(
+    width: u32,
+    height: u32,
+    png: &[u8],
+) -> String {
+    present_drag_payload_sequence(&format!("t=p:x=-1:y=100:X={width}:Y={height}"), png, false)
 }
 
 fn present_drag_payload_sequence(metadata: &str, data: &[u8], finish: bool) -> String {
@@ -293,7 +301,7 @@ mod tests {
     fn present_drag_icon_uses_text_payload_without_finish_marker() {
         assert_eq!(
             present_drag_icon_sequence("1 selected file(s)"),
-            "\x1b]72;t=p:x=-1:y=0:X=6:Y=4:o=0:m=0;MSBzZWxlY3RlZCBmaWxlKHMp\x1b\\"
+            "\x1b]72;t=p:x=-1:y=0:X=6:Y=4:o=1024:m=0;MSBzZWxlY3RlZCBmaWxlKHMp\x1b\\"
         );
     }
 

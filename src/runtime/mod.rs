@@ -15,7 +15,9 @@ use self::{
 use crate::{
     RunOptions, RunOutcome,
     app::{App, ChooserExit, ClipOp, PendingTerminalTask},
-    config, path_display, shell, ui, zoxide,
+    config,
+    core::EntryKind,
+    path_display, shell, ui, zoxide,
 };
 use anyhow::Result;
 use crossterm::{
@@ -59,6 +61,12 @@ impl PendingDragOut {
 #[derive(Debug, Default)]
 struct PendingDropIn {
     op: Option<ClipOp>,
+}
+
+struct DragIconLabel {
+    icon: String,
+    text: String,
+    icon_color: ratatui::style::Color,
 }
 
 impl PendingDropIn {
@@ -157,6 +165,10 @@ fn run_app(
     reveal_hidden_start_focus: bool,
     chooser_enabled: bool,
 ) -> Result<AppExit> {
+    if kitty_dnd.is_enabled() {
+        kitty_dnd::prewarm_drag_image_renderer();
+    }
+
     let mut app = match cwd {
         Some(cwd) => App::new_at_startup(cwd, start_focus, reveal_hidden_start_focus)?,
         None => App::new()?,
@@ -696,10 +708,10 @@ fn handle_kitty_dnd_event(
                 return Ok(());
             }
 
-            let label = drag_icon_label(&paths);
+            let label = drag_icon_label(app, &paths);
             let mut sequence = kitty_dnd::agree_drag_sequence(kitty_dnd::DndOperation::Either);
             sequence.push_str(&kitty_dnd::present_drag_data_sequence(0, &uri_list));
-            sequence.push_str(&kitty_dnd::present_drag_icon_sequence(&label));
+            sequence.push_str(&drag_icon_sequence(&label));
             sequence.push_str(kitty_dnd::start_drag_sequence());
             terminal.backend_mut().write_all(sequence.as_bytes())?;
             terminal.backend_mut().flush()?;
@@ -764,23 +776,133 @@ fn clip_op_to_drop_finish(op: ClipOp) -> kitty_dnd::DropFinish {
     }
 }
 
-fn drag_icon_label(paths: &[PathBuf]) -> String {
-    const MAX_LABEL_CHARS: usize = 32;
-
-    let label = match paths {
-        [path] => path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "1 item".to_string()),
-        paths => format!("{} items", paths.len()),
-    };
-
-    if label.chars().count() <= MAX_LABEL_CHARS {
-        return label;
+fn drag_icon_sequence(label: &DragIconLabel) -> String {
+    let palette = ui::theme::palette();
+    if let Some(image) = kitty_dnd::render_drag_image(
+        &label.icon,
+        &label.text,
+        label.icon_color,
+        palette.elevated,
+        palette.text,
+    ) {
+        return kitty_dnd::present_drag_icon_png_sequence(image.width, image.height, &image.png);
     }
 
-    let mut truncated: String = label.chars().take(MAX_LABEL_CHARS - 3).collect();
+    kitty_dnd::present_drag_icon_sequence(&label.as_text())
+}
+
+impl DragIconLabel {
+    fn as_text(&self) -> String {
+        format!("{} {}", self.icon, self.text)
+    }
+}
+
+fn drag_icon_label(app: &App, paths: &[PathBuf]) -> DragIconLabel {
+    drag_icon_label_with(paths, |path| drag_icon_for_path(app, path))
+}
+
+fn drag_icon_label_with<F>(paths: &[PathBuf], mut icon_for_path: F) -> DragIconLabel
+where
+    F: FnMut(&Path) -> (String, ratatui::style::Color),
+{
+    const MAX_LABEL_CHARS: usize = 32;
+
+    let (icon, text) = match paths {
+        [path] => {
+            let (icon, icon_color) = icon_for_path(path);
+            let text = path
+                .file_name()
+                .map(|name| crate::app::sanitize_terminal_text(&name.to_string_lossy()))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "1 item".to_string());
+            return DragIconLabel {
+                icon,
+                text: truncate_drag_label_text(&text, MAX_LABEL_CHARS),
+                icon_color,
+            };
+        }
+        paths => (
+            drag_icon_for_many(paths, &mut icon_for_path),
+            format!("{} items", paths.len()),
+        ),
+    };
+    let text = truncate_drag_label_text(&text, MAX_LABEL_CHARS);
+    DragIconLabel {
+        icon: icon.0,
+        text,
+        icon_color: icon.1,
+    }
+}
+
+fn drag_icon_for_path(app: &App, path: &Path) -> (String, ratatui::style::Color) {
+    if let Some(entry) = app
+        .navigation
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+    {
+        let appearance = ui::theme::resolve_browser_entry(entry);
+        return (appearance.icon.to_string(), appearance.color);
+    }
+
+    let appearance = ui::theme::resolve_path(path, drag_entry_kind(path));
+    (appearance.icon.to_string(), appearance.color)
+}
+
+fn drag_entry_kind(path: &Path) -> EntryKind {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
+        _ => EntryKind::File,
+    }
+}
+
+fn drag_icon_for_many<F>(
+    paths: &[PathBuf],
+    icon_for_path: &mut F,
+) -> (String, ratatui::style::Color)
+where
+    F: FnMut(&Path) -> (String, ratatui::style::Color),
+{
+    const MULTIPLE_FOLDERS_ICON: &str = "󰉓";
+    const MULTIPLE_FILES_ICON: &str = "";
+
+    let Some((first, rest)) = paths.split_first() else {
+        let appearance = ui::theme::resolve_path(Path::new("item"), EntryKind::File);
+        return (MULTIPLE_FILES_ICON.to_string(), appearance.color);
+    };
+
+    let first_kind = drag_entry_kind(first);
+    let (first_icon, first_color) = icon_for_path(first);
+    let mut all_same_icon = true;
+    let mut all_directories = first_kind == EntryKind::Directory;
+
+    for path in rest {
+        let kind = drag_entry_kind(path);
+        let (icon, _) = icon_for_path(path);
+        all_same_icon &= icon == first_icon;
+        all_directories &= kind == EntryKind::Directory;
+    }
+
+    if all_same_icon {
+        (first_icon, first_color)
+    } else if all_directories {
+        let appearance = ui::theme::resolve_path(Path::new("folder"), EntryKind::Directory);
+        (MULTIPLE_FOLDERS_ICON.to_string(), appearance.color)
+    } else {
+        let appearance = ui::theme::resolve_path(Path::new("item"), EntryKind::File);
+        (MULTIPLE_FILES_ICON.to_string(), appearance.color)
+    }
+}
+
+fn truncate_drag_label_text(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        return label.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+
+    let mut truncated: String = label.chars().take(max_chars - 3).collect();
     truncated.push_str("...");
     truncated
 }
@@ -808,11 +930,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_SCROLL_POLL_INTERVAL, IDLE_POLL_INTERVAL, drag_icon_label,
+        ACTIVE_SCROLL_POLL_INTERVAL, IDLE_POLL_INTERVAL, drag_icon_label_with,
         event_implies_terminal_focus, event_poll_interval, unsupported_drop_scheme_status,
     };
     use crossterm::event::Event;
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn event_poll_interval_stays_idle_while_terminal_is_unfocused() {
@@ -886,22 +1012,76 @@ mod tests {
     #[test]
     fn drag_icon_label_uses_name_for_single_item_and_count_for_many() {
         assert_eq!(
-            drag_icon_label(&[PathBuf::from("/tmp/report.pdf")]),
-            "report.pdf"
+            drag_icon_label_with(&[PathBuf::from("/tmp/report.pdf")], |_| (
+                "󰈙".to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            "󰈙 report.pdf"
         );
         assert_eq!(
-            drag_icon_label(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]),
-            "2 items"
+            drag_icon_label_with(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")], |_| (
+                "󰈔".to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            "󰈔 2 items"
         );
+    }
+
+    #[test]
+    fn drag_icon_label_uses_multi_item_icon_for_mixed_selection() {
+        let paths = [PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")];
+
+        assert_eq!(
+            drag_icon_label_with(&paths, |path| (
+                if path.ends_with("a") { "󰉋" } else { "󰈔" }.to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            " 2 items"
+        );
+    }
+
+    #[test]
+    fn drag_icon_label_uses_multi_folder_icon_for_different_folder_icons() {
+        let root = std::env::temp_dir().join(format!(
+            "elio-drag-icons-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let first = root.join("src");
+        let second = root.join("docs");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+
+        let label = drag_icon_label_with(&[first, second], |path| {
+            let icon = if path.ends_with("src") {
+                "󰉋"
+            } else {
+                "󰉓"
+            };
+            (icon.to_string(), ratatui::style::Color::White)
+        })
+        .as_text();
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(label, "󰉓 2 items");
     }
 
     #[test]
     fn drag_icon_label_truncates_long_names() {
         assert_eq!(
-            drag_icon_label(&[PathBuf::from(
-                "/tmp/abcdefghijklmnopqrstuvwxyz0123456789.txt"
-            )]),
-            "abcdefghijklmnopqrstuvwxyz012..."
+            drag_icon_label_with(
+                &[PathBuf::from(
+                    "/tmp/abcdefghijklmnopqrstuvwxyz0123456789.txt"
+                )],
+                |_| ("󰈔".to_string(), ratatui::style::Color::White)
+            )
+            .as_text(),
+            "󰈔 abcdefghijklmnopqrstuvwxyz012..."
         );
     }
 }

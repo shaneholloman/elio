@@ -1,6 +1,7 @@
-// Adapted from crossterm 0.29's Unix event parser so elio can intercept Kitty
-// OSC 72 DND before normal event parsing. This is intentionally kept close to
-// upstream crossterm; when bumping crossterm, compare and port parser fixes.
+// Adapted from crossterm 0.29's MIT-licensed Unix event parser so elio can
+// intercept Kitty OSC 72 DND before normal event parsing. This is intentionally
+// kept close to upstream crossterm; when bumping crossterm, compare and port
+// parser fixes.
 use std::io;
 
 use crossterm::event::{
