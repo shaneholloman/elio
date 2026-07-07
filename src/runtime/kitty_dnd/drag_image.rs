@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
     thread,
 };
@@ -230,14 +229,14 @@ struct RenderFontSet<'a> {
 fn load_font_from_disk() -> Option<FontSet> {
     let primary_path = kitty_font_family()
         .as_deref()
-        .and_then(resolve_fontconfig_family)
-        .or_else(|| resolve_fontconfig_family("monospace"))
+        .and_then(platform_fonts::resolve_family)
+        .or_else(platform_fonts::resolve_monospace)
         .or_else(known_font_fallback)?;
     let primary = load_font(&primary_path)?;
 
     let fallbacks = ["Symbols Nerd Font Mono", "Symbols Nerd Font"]
         .into_iter()
-        .filter_map(resolve_matching_fontconfig_family)
+        .filter_map(platform_fonts::resolve_matching_family)
         .filter(|path| path != &primary_path)
         .filter_map(|path| load_font(&path))
         .collect();
@@ -298,32 +297,9 @@ fn cached_glyph_fallback(ch: char) -> Option<Arc<Font>> {
 }
 
 fn load_glyph_fallback(ch: char) -> Option<Arc<Font>> {
-    let path = resolve_fontconfig_char(ch)?;
+    let path = platform_fonts::resolve_char(ch)?;
     let font = load_font(&path)?;
     (font.lookup_glyph_index(ch) != 0).then(|| Arc::new(font))
-}
-
-fn resolve_fontconfig_char(ch: char) -> Option<PathBuf> {
-    let query = fontconfig_charset_query(ch);
-    let output = Command::new("fc-match")
-        .arg("-f")
-        .arg("%{file}\n")
-        .arg(query)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let output = String::from_utf8_lossy(&output.stdout);
-    let path = PathBuf::from(output.lines().next()?.trim());
-    path.exists().then_some(path)
-}
-
-fn fontconfig_charset_query(ch: char) -> String {
-    format!(":charset={:x}", ch as u32)
 }
 
 fn load_font(path: &Path) -> Option<Font> {
@@ -408,33 +384,295 @@ fn clean_kitty_value(value: &str) -> Option<&str> {
     Some(value.trim_matches(['\'', '"']))
 }
 
-fn resolve_fontconfig_family(family: &str) -> Option<PathBuf> {
-    resolve_fontconfig_family_output(family).map(|(_, path)| path)
-}
+#[cfg(not(target_os = "macos"))]
+mod platform_fonts {
+    use std::{
+        path::PathBuf,
+        process::{Command, Stdio},
+    };
 
-fn resolve_matching_fontconfig_family(family: &str) -> Option<PathBuf> {
-    let (matched_family, path) = resolve_fontconfig_family_output(family)?;
-    matched_family
-        .to_ascii_lowercase()
-        .contains(&family.to_ascii_lowercase())
-        .then_some(path)
-}
-
-fn resolve_fontconfig_family_output(family: &str) -> Option<(String, PathBuf)> {
-    let output = Command::new("fc-match")
-        .args(["-f", "%{family}\n%{file}\n", family])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    pub(super) fn resolve_family(family: &str) -> Option<PathBuf> {
+        resolve_family_output(family).map(|(_, path)| path)
     }
-    let output = String::from_utf8_lossy(&output.stdout);
-    let mut lines = output.lines();
-    let matched_family = lines.next()?.trim().to_string();
-    let path = PathBuf::from(lines.next()?.trim());
-    path.exists().then_some((matched_family, path))
+
+    pub(super) fn resolve_monospace() -> Option<PathBuf> {
+        resolve_family("monospace")
+    }
+
+    pub(super) fn resolve_matching_family(family: &str) -> Option<PathBuf> {
+        let (matched_family, path) = resolve_family_output(family)?;
+        matched_family
+            .to_ascii_lowercase()
+            .contains(&family.to_ascii_lowercase())
+            .then_some(path)
+    }
+
+    pub(super) fn resolve_char(ch: char) -> Option<PathBuf> {
+        let query = fontconfig_charset_query(ch);
+        let output = Command::new("fc-match")
+            .arg("-f")
+            .arg("%{file}\n")
+            .arg(query)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+
+        let output = String::from_utf8_lossy(&output.stdout);
+        let path = PathBuf::from(output.lines().next()?.trim());
+        path.exists().then_some(path)
+    }
+
+    pub(super) fn fontconfig_charset_query(ch: char) -> String {
+        format!(":charset={:x}", ch as u32)
+    }
+
+    fn resolve_family_output(family: &str) -> Option<(String, PathBuf)> {
+        let output = Command::new("fc-match")
+            .args(["-f", "%{family}\n%{file}\n", family])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let output = String::from_utf8_lossy(&output.stdout);
+        let mut lines = output.lines();
+        let matched_family = lines.next()?.trim().to_string();
+        let path = PathBuf::from(lines.next()?.trim());
+        path.exists().then_some((matched_family, path))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod platform_fonts {
+    use std::{ffi::c_void, path::PathBuf, ptr};
+
+    type Boolean = u8;
+    type CFIndex = isize;
+    type CFStringEncoding = u32;
+    type CFTypeRef = *const c_void;
+    type CFStringRef = *const c_void;
+    type CFURLRef = *const c_void;
+    type CTFontRef = *const c_void;
+    type CTFontDescriptorRef = *const c_void;
+    type CGFloat = f64;
+
+    const K_CF_STRING_ENCODING_UTF8: CFStringEncoding = 0x0800_0100;
+    const K_CFURL_POSIX_PATH_STYLE: CFIndex = 0;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CFRange {
+        location: CFIndex,
+        length: CFIndex,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(cf: CFTypeRef);
+        fn CFStringCreateWithBytes(
+            alloc: *const c_void,
+            bytes: *const u8,
+            num_bytes: CFIndex,
+            encoding: CFStringEncoding,
+            is_external_representation: Boolean,
+        ) -> CFStringRef;
+        fn CFStringGetCString(
+            string: CFStringRef,
+            buffer: *mut i8,
+            buffer_size: CFIndex,
+            encoding: CFStringEncoding,
+        ) -> Boolean;
+        fn CFStringGetLength(string: CFStringRef) -> CFIndex;
+        fn CFStringGetMaximumSizeForEncoding(
+            length: CFIndex,
+            encoding: CFStringEncoding,
+        ) -> CFIndex;
+        fn CFURLCopyFileSystemPath(url: CFURLRef, path_style: CFIndex) -> CFStringRef;
+    }
+
+    #[link(name = "CoreText", kind = "framework")]
+    unsafe extern "C" {
+        static kCTFontURLAttribute: CFStringRef;
+
+        fn CTFontCreateWithName(
+            name: CFStringRef,
+            size: CGFloat,
+            matrix: *const c_void,
+        ) -> CTFontRef;
+        fn CTFontCreateForString(
+            current_font: CTFontRef,
+            string: CFStringRef,
+            range: CFRange,
+        ) -> CTFontRef;
+        fn CTFontCopyFamilyName(font: CTFontRef) -> CFStringRef;
+        fn CTFontCopyFontDescriptor(font: CTFontRef) -> CTFontDescriptorRef;
+        fn CTFontDescriptorCopyAttribute(
+            descriptor: CTFontDescriptorRef,
+            attribute: CFStringRef,
+        ) -> CFTypeRef;
+    }
+
+    pub(super) fn resolve_family(family: &str) -> Option<PathBuf> {
+        font_path_for_family(family).map(|resolved| resolved.path)
+    }
+
+    pub(super) fn resolve_monospace() -> Option<PathBuf> {
+        ["Menlo", "Monaco"]
+            .into_iter()
+            .find_map(|family| font_path_for_family(family).map(|resolved| resolved.path))
+    }
+
+    pub(super) fn resolve_matching_family(family: &str) -> Option<PathBuf> {
+        let resolved = font_path_for_family(family)?;
+        resolved
+            .family
+            .to_ascii_lowercase()
+            .contains(&family.to_ascii_lowercase())
+            .then_some(resolved.path)
+    }
+
+    pub(super) fn resolve_char(ch: char) -> Option<PathBuf> {
+        let base_font =
+            create_font_for_family("Menlo").or_else(|| create_font_for_family("Monaco"))?;
+        let Some(text) = cf_string_from_str(&ch.to_string()) else {
+            release_if_present(base_font);
+            return None;
+        };
+        let length = unsafe { CFStringGetLength(text) };
+        let fallback = unsafe {
+            CTFontCreateForString(
+                base_font,
+                text,
+                CFRange {
+                    location: 0,
+                    length,
+                },
+            )
+        };
+
+        let path = font_path_for_font(fallback).map(|resolved| resolved.path);
+        release_if_present(fallback);
+        release_if_present(text);
+        release_if_present(base_font);
+        path
+    }
+
+    struct ResolvedFont {
+        path: PathBuf,
+        family: String,
+    }
+
+    fn font_path_for_family(family: &str) -> Option<ResolvedFont> {
+        let font = create_font_for_family(family)?;
+        let resolved = font_path_for_font(font);
+        release_if_present(font);
+        resolved
+    }
+
+    fn create_font_for_family(family: &str) -> Option<CTFontRef> {
+        let name = cf_string_from_str(family)?;
+        let font = unsafe { CTFontCreateWithName(name, 12.0, ptr::null()) };
+        release_if_present(name);
+        (!font.is_null()).then_some(font)
+    }
+
+    fn font_path_for_font(font: CTFontRef) -> Option<ResolvedFont> {
+        if font.is_null() {
+            return None;
+        }
+
+        let descriptor = unsafe { CTFontCopyFontDescriptor(font) };
+        if descriptor.is_null() {
+            return None;
+        }
+
+        let url = unsafe { CTFontDescriptorCopyAttribute(descriptor, kCTFontURLAttribute) };
+        let family = copy_font_family(font);
+        let path = font_url_to_path(url as CFURLRef);
+
+        release_if_present(url);
+        release_if_present(descriptor);
+
+        Some(ResolvedFont {
+            path: path?,
+            family: family?,
+        })
+    }
+
+    fn font_url_to_path(url: CFURLRef) -> Option<PathBuf> {
+        if url.is_null() {
+            return None;
+        }
+
+        let path_string = unsafe { CFURLCopyFileSystemPath(url, K_CFURL_POSIX_PATH_STYLE) };
+        let path = cf_string_to_string(path_string).map(PathBuf::from);
+        release_if_present(path_string);
+        path.filter(|path| path.exists())
+    }
+
+    fn copy_font_family(font: CTFontRef) -> Option<String> {
+        let family = unsafe { CTFontCopyFamilyName(font) };
+        let value = cf_string_to_string(family);
+        release_if_present(family);
+        value
+    }
+
+    fn cf_string_from_str(value: &str) -> Option<CFStringRef> {
+        let string = unsafe {
+            CFStringCreateWithBytes(
+                ptr::null(),
+                value.as_ptr(),
+                value.len() as CFIndex,
+                K_CF_STRING_ENCODING_UTF8,
+                0,
+            )
+        };
+        (!string.is_null()).then_some(string)
+    }
+
+    fn cf_string_to_string(value: CFStringRef) -> Option<String> {
+        if value.is_null() {
+            return None;
+        }
+
+        let length = unsafe { CFStringGetLength(value) };
+        let capacity =
+            unsafe { CFStringGetMaximumSizeForEncoding(length, K_CF_STRING_ENCODING_UTF8) } + 1;
+        let mut bytes = vec![0i8; capacity as usize];
+        let ok = unsafe {
+            CFStringGetCString(
+                value,
+                bytes.as_mut_ptr(),
+                capacity,
+                K_CF_STRING_ENCODING_UTF8,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+
+        let nul = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
+        let bytes = bytes[..nul]
+            .iter()
+            .map(|byte| *byte as u8)
+            .collect::<Vec<_>>();
+        String::from_utf8(bytes).ok()
+    }
+
+    fn release_if_present(value: CFTypeRef) {
+        if !value.is_null() {
+            unsafe { CFRelease(value) };
+        }
+    }
 }
 
 fn known_font_fallback() -> Option<PathBuf> {
@@ -545,17 +783,6 @@ fn draw_text(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fontconfig_charset_query_uses_lowercase_hex_codepoint() {
-        assert_eq!(fontconfig_charset_query('󰉋'), ":charset=f024b");
-        assert_eq!(fontconfig_charset_query('A'), ":charset=41");
-    }
-}
-
 fn draw_rounded_rect(canvas: &mut Canvas<'_>, rect: Rect, radius: f32, rgba: [u8; 4]) {
     let left = rect.x.floor().max(0.0) as u32;
     let top = rect.y.floor().max(0.0) as u32;
@@ -630,4 +857,20 @@ fn color_rgb(color: Color) -> Option<[u8; 3]> {
         Color::White => [231, 237, 245],
         Color::Indexed(_) | Color::Reset => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn fontconfig_charset_query_uses_lowercase_hex_codepoint() {
+        assert_eq!(
+            super::platform_fonts::fontconfig_charset_query('󰉋'),
+            ":charset=f024b"
+        );
+        assert_eq!(
+            super::platform_fonts::fontconfig_charset_query('A'),
+            ":charset=41"
+        );
+    }
 }
