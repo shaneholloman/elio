@@ -1,9 +1,12 @@
 mod draw;
+mod input;
+mod kitty_dnd;
 mod session_files;
 mod terminal;
 
 use self::{
     draw::draw_terminal_frame,
+    input::{RuntimeInputEvent, RuntimeInputReader},
     session_files::{write_chooser_file_if_requested, write_cwd_file_if_requested},
     terminal::{
         AppTerminal, Drainer, init_terminal, restore_terminal, resume_terminal, suspend_terminal,
@@ -14,6 +17,8 @@ use crate::{
     app::{App, ChooserExit, PendingTerminalTask},
     config, path_display, shell, ui, zoxide,
 };
+#[cfg(unix)]
+use crate::{app::ClipOp, core::EntryKind};
 use anyhow::Result;
 use crossterm::{
     cursor::SetCursorStyle,
@@ -31,11 +36,56 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const ACTIVE_SCROLL_POLL_INTERVAL: Duration = Duration::from_millis(12);
 const WINDOWS_TERMINAL_ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(24);
 const RELATIVE_TIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_INPUT_EVENTS_PER_FRAME: usize = 64;
+const MAX_INPUT_BATCH_DURATION: Duration = Duration::from_millis(4);
 
 #[derive(Debug)]
 struct AppExit {
     final_cwd: Option<PathBuf>,
     chooser: Option<ChooserExit>,
+}
+
+#[derive(Debug, Default)]
+#[cfg(unix)]
+struct PendingDragOut {
+    active: bool,
+    uri_list: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl PendingDragOut {
+    fn reset(&mut self) {
+        self.active = false;
+        self.uri_list.clear();
+    }
+}
+
+#[derive(Debug, Default)]
+#[cfg(unix)]
+struct PendingDropIn {
+    op: Option<ClipOp>,
+}
+
+#[cfg(unix)]
+struct DragIconLabel {
+    icon: String,
+    text: String,
+    icon_color: ratatui::style::Color,
+}
+
+#[cfg(unix)]
+impl PendingDropIn {
+    fn set(&mut self, op: ClipOp) {
+        self.op = Some(op);
+    }
+
+    fn take(&mut self) -> Option<ClipOp> {
+        self.op.take()
+    }
+
+    fn reset(&mut self) {
+        self.op = None;
+    }
 }
 
 pub(crate) fn run_with_startup_state(
@@ -50,16 +100,17 @@ pub(crate) fn run_with_startup_state(
     } = options;
     config::initialize();
     ui::theme::initialize();
-    let (mut terminal, drainer) = init_terminal()?;
+    let (mut terminal, drainer, kitty_dnd) = init_terminal()?;
     let result = run_app(
         &mut terminal,
         &drainer,
+        &kitty_dnd,
         start_dir,
         start_focus,
         reveal_hidden_start_focus,
         chooser_file.is_some(),
     );
-    restore_terminal(&mut terminal, &drainer)?;
+    restore_terminal(&mut terminal, &drainer, &kitty_dnd)?;
     let app_exit = result?;
     if let Some(final_cwd) = app_exit.final_cwd {
         write_cwd_file_if_requested(cwd_file.as_deref(), &final_cwd)?;
@@ -113,11 +164,17 @@ fn apply_zoxide_query_result(app: &mut App, result: zoxide::QueryResult) {
 fn run_app(
     terminal: &mut AppTerminal,
     drainer: &Drainer,
+    kitty_dnd: &kitty_dnd::KittyDndRuntime,
     cwd: Option<PathBuf>,
     start_focus: Option<PathBuf>,
     reveal_hidden_start_focus: bool,
     chooser_enabled: bool,
 ) -> Result<AppExit> {
+    #[cfg(unix)]
+    if kitty_dnd.is_enabled() {
+        kitty_dnd::prewarm_drag_image_renderer();
+    }
+
     let mut app = match cwd {
         Some(cwd) => App::new_at_startup(cwd, start_focus, reveal_hidden_start_focus)?,
         None => App::new()?,
@@ -135,10 +192,27 @@ fn run_app(
     // crossterm and cannot corrupt mouse reporting.
     app.enable_terminal_image_previews();
 
+    let input_reader = match RuntimeInputReader::new(kitty_dnd.is_enabled()) {
+        Ok(reader) => reader,
+        Err(error) => {
+            if kitty_dnd.is_enabled() {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::disable_sequence().as_bytes())?;
+                terminal.backend_mut().flush()?;
+                app.set_status_message(format!("Kitty DND disabled: {error}"));
+            }
+            RuntimeInputReader::Crossterm
+        }
+    };
     let mut dirty = true;
     let mut search_cursor_active = false;
     let mut terminal_focused = true;
     let mut last_relative_time_refresh_at = Instant::now();
+    #[cfg(unix)]
+    let mut pending_drag_out = PendingDragOut::default();
+    #[cfg(unix)]
+    let mut pending_drop_in = PendingDropIn::default();
 
     loop {
         if app.should_quit {
@@ -276,13 +350,44 @@ fn run_app(
             ],
         );
 
-        if event::poll(poll_interval)? {
+        if let Some(first_input) = read_runtime_input(&input_reader, poll_interval)? {
             // Batch all immediately-available events into one render cycle.
             // This prevents lag when events (especially scroll events from high-frequency
             // terminals) arrive faster than the app can render: instead of one render per
             // event we accumulate all queued events first and render the final state once.
+            let mut next_input = Some(first_input);
+            let batch_started_at = Instant::now();
+            let mut batched_events = 0usize;
             loop {
-                let event = event::read()?;
+                batched_events += 1;
+                let input = match next_input.take() {
+                    Some(input) => input,
+                    None => match try_read_runtime_input(&input_reader)? {
+                        Some(input) => input,
+                        None => break,
+                    },
+                };
+                let input = coalesce_resize_inputs(
+                    &input_reader,
+                    input,
+                    &mut next_input,
+                    &mut batched_events,
+                )?;
+                #[cfg(unix)]
+                let input_result = handle_runtime_input(
+                    terminal,
+                    &mut app,
+                    input,
+                    &mut pending_drag_out,
+                    &mut pending_drop_in,
+                )?;
+                #[cfg(not(unix))]
+                let input_result = handle_runtime_input(input)?;
+                let Some(event) = input_result else {
+                    dirty = true;
+                    next_input = try_read_runtime_input(&input_reader)?;
+                    continue;
+                };
                 if std::env::var_os("ELIO_LOG_MOUSE").is_some()
                     && let Event::Mouse(m) = &event
                 {
@@ -326,9 +431,12 @@ fn run_app(
                     if needs_render && terminal_focused {
                         dirty = true;
                     }
-                }
-                // Stop batching once there are no more immediately available events.
-                if !event::poll(Duration::ZERO)? {
+                };
+                next_input = try_read_runtime_input(&input_reader)?;
+                if next_input.is_some()
+                    && (batched_events >= MAX_INPUT_EVENTS_PER_FRAME
+                        || batch_started_at.elapsed() >= MAX_INPUT_BATCH_DURATION)
+                {
                     break;
                 }
             }
@@ -342,15 +450,19 @@ fn run_app(
             if let Some(task) = app.pending_terminal_task.take() {
                 let zoxide_result = match task {
                     PendingTerminalTask::Command { program, args } => {
-                        suspend_terminal(terminal, drainer, true)?;
+                        pause_runtime_input(&input_reader, true);
+                        suspend_terminal(terminal, drainer, true, kitty_dnd)?;
                         run_blocking_in_terminal(&program, &args);
-                        resume_terminal(terminal, drainer)?;
+                        resume_terminal(terminal, drainer, kitty_dnd)?;
+                        pause_runtime_input(&input_reader, false);
                         None
                     }
                     PendingTerminalTask::Shell { cwd } => {
-                        suspend_terminal(terminal, drainer, true)?;
+                        pause_runtime_input(&input_reader, true);
+                        suspend_terminal(terminal, drainer, true, kitty_dnd)?;
                         let shell_result = shell::run_in_current_terminal(&cwd);
-                        resume_terminal(terminal, drainer)?;
+                        resume_terminal(terminal, drainer, kitty_dnd)?;
+                        pause_runtime_input(&input_reader, false);
                         match shell_result {
                             Ok(()) => refresh_after_shell(&mut app, &cwd),
                             Err(error) => app.set_status_message(error),
@@ -362,9 +474,11 @@ fn run_app(
                         if let Some(result) = zoxide::preflight(&cwd) {
                             Some(result)
                         } else {
-                            suspend_terminal(terminal, drainer, false)?;
+                            pause_runtime_input(&input_reader, true);
+                            suspend_terminal(terminal, drainer, false, kitty_dnd)?;
                             let result = zoxide::run_query_in_terminal(&cwd);
-                            resume_terminal(terminal, drainer)?;
+                            resume_terminal(terminal, drainer, kitty_dnd)?;
+                            pause_runtime_input(&input_reader, false);
                             Some(result)
                         }
                     }
@@ -400,6 +514,436 @@ fn event_implies_terminal_focus(event: &Event) -> bool {
     matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
 }
 
+fn read_runtime_input(
+    reader: &RuntimeInputReader,
+    timeout: Duration,
+) -> Result<Option<RuntimeInputEvent>> {
+    match reader {
+        RuntimeInputReader::Crossterm => {
+            if event::poll(timeout)? {
+                Ok(Some(RuntimeInputEvent::Terminal(event::read()?)))
+            } else {
+                Ok(None)
+            }
+        }
+        #[cfg(unix)]
+        RuntimeInputReader::Custom(reader) => Ok(reader.recv_timeout(timeout)?),
+    }
+}
+
+fn try_read_runtime_input(reader: &RuntimeInputReader) -> Result<Option<RuntimeInputEvent>> {
+    match reader {
+        RuntimeInputReader::Crossterm => {
+            if event::poll(Duration::ZERO)? {
+                Ok(Some(RuntimeInputEvent::Terminal(event::read()?)))
+            } else {
+                Ok(None)
+            }
+        }
+        #[cfg(unix)]
+        RuntimeInputReader::Custom(reader) => Ok(reader.try_recv()?),
+    }
+}
+
+fn pause_runtime_input(reader: &RuntimeInputReader, paused: bool) {
+    #[cfg(unix)]
+    if let RuntimeInputReader::Custom(reader) = reader {
+        reader.set_paused(paused);
+    }
+    #[cfg(not(unix))]
+    let _ = (reader, paused);
+}
+
+fn coalesce_resize_inputs(
+    reader: &RuntimeInputReader,
+    input: RuntimeInputEvent,
+    next_input: &mut Option<RuntimeInputEvent>,
+    batched_events: &mut usize,
+) -> Result<RuntimeInputEvent> {
+    let RuntimeInputEvent::Terminal(Event::Resize(mut width, mut height)) = input else {
+        return Ok(input);
+    };
+
+    let started_at = Instant::now();
+    loop {
+        let candidate = if let Some(input) = next_input.take() {
+            Some(input)
+        } else {
+            try_read_runtime_input(reader)?
+        };
+        match candidate {
+            Some(RuntimeInputEvent::Terminal(Event::Resize(w, h))) => {
+                width = w;
+                height = h;
+                *batched_events += 1;
+                if *batched_events >= MAX_INPUT_EVENTS_PER_FRAME
+                    || started_at.elapsed() >= MAX_INPUT_BATCH_DURATION
+                {
+                    break;
+                }
+            }
+            Some(other) => {
+                *next_input = Some(other);
+                break;
+            }
+            None => break,
+        }
+    }
+
+    Ok(RuntimeInputEvent::Terminal(Event::Resize(width, height)))
+}
+
+#[cfg(unix)]
+fn handle_runtime_input(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    input: RuntimeInputEvent,
+    pending_drag_out: &mut PendingDragOut,
+    pending_drop_in: &mut PendingDropIn,
+) -> Result<Option<Event>> {
+    match input {
+        RuntimeInputEvent::Terminal(event) => Ok(Some(event)),
+        RuntimeInputEvent::KittyDnd(event) => {
+            handle_kitty_dnd_event(terminal, app, event, pending_drag_out, pending_drop_in)?;
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn handle_runtime_input(input: RuntimeInputEvent) -> Result<Option<Event>> {
+    match input {
+        RuntimeInputEvent::Terminal(event) => Ok(Some(event)),
+    }
+}
+
+#[cfg(unix)]
+fn handle_kitty_dnd_event(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    event: kitty_dnd::KittyDndEvent,
+    pending_drag_out: &mut PendingDragOut,
+    pending_drop_in: &mut PendingDropIn,
+) -> Result<()> {
+    match event {
+        kitty_dnd::KittyDndEvent::DropOffer {
+            mime_index,
+            operation,
+            final_drop,
+        } => {
+            let chosen_op = choose_drop_op(operation);
+            let sequence = if pending_drag_out.active && final_drop {
+                pending_drag_out.reset();
+                pending_drop_in.reset();
+                app.clear_drag_state();
+                format!(
+                    "{}{}",
+                    kitty_dnd::finish_drop_sequence(kitty_dnd::DropFinish::Reject),
+                    kitty_dnd::cancel_drag_sequence()
+                )
+            } else if pending_drag_out.active {
+                pending_drop_in.reset();
+                kitty_dnd::reject_drop_sequence().to_string()
+            } else if final_drop {
+                pending_drop_in.set(chosen_op);
+                kitty_dnd::request_drop_data_sequence(mime_index)
+            } else {
+                pending_drop_in.set(chosen_op);
+                kitty_dnd::accept_drop_sequence(drop_op_to_dnd_operation(chosen_op))
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropData {
+            paths,
+            unsupported_schemes,
+            ..
+        } => {
+            let was_own_drag = pending_drag_out.active;
+            let op = pending_drop_in.take();
+            let mut finish = kitty_dnd::DropFinish::Reject;
+            if was_own_drag {
+                pending_drag_out.reset();
+                app.clear_drag_state();
+            } else if !unsupported_schemes.is_empty() {
+                app.set_status_message(unsupported_drop_scheme_status(&unsupported_schemes));
+            } else if let Some(op) = op {
+                if app.drop_external_paths(paths, op)? {
+                    finish = clip_op_to_drop_finish(op);
+                }
+            } else {
+                app.set_status_message("Drop was not negotiated");
+            }
+            terminal
+                .backend_mut()
+                .write_all(kitty_dnd::finish_drop_sequence(finish).as_bytes())?;
+            if was_own_drag {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+            }
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropLeave => {}
+        kitty_dnd::KittyDndEvent::DropDataError {
+            mime_index: _,
+            message,
+        } => {
+            let was_own_drag = pending_drag_out.active;
+            if pending_drag_out.active {
+                pending_drag_out.reset();
+                app.clear_drag_state();
+            }
+            terminal.backend_mut().write_all(
+                kitty_dnd::finish_drop_sequence(kitty_dnd::DropFinish::Reject).as_bytes(),
+            )?;
+            if was_own_drag {
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+            }
+            if !message.is_empty() {
+                app.set_status_message(format!("Drop failed: {message}"));
+            }
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DropUnsupported { final_drop } => {
+            pending_drop_in.reset();
+            let sequence = if final_drop {
+                kitty_dnd::finish_drop_sequence(kitty_dnd::DropFinish::Reject)
+            } else {
+                kitty_dnd::reject_drop_sequence()
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DragOffer { x, y } => {
+            if pending_drag_out.active {
+                return Ok(());
+            }
+            let paths = app.take_drag_export_paths_at(x, y);
+            let uri_list = kitty_dnd::uri_list_payload(&paths);
+            if uri_list.is_empty() {
+                pending_drag_out.reset();
+                app.clear_drag_candidate();
+                terminal
+                    .backend_mut()
+                    .write_all(kitty_dnd::cancel_drag_sequence().as_bytes())?;
+                terminal.backend_mut().flush()?;
+                return Ok(());
+            }
+
+            let label = drag_icon_label(app, &paths);
+            let mut sequence = kitty_dnd::agree_drag_sequence(kitty_dnd::DndOperation::Either);
+            sequence.push_str(&kitty_dnd::present_drag_data_sequence(0, &uri_list));
+            sequence.push_str(&drag_icon_sequence(&label));
+            sequence.push_str(kitty_dnd::start_drag_sequence());
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+
+            pending_drag_out.active = true;
+            pending_drag_out.uri_list = uri_list;
+        }
+        kitty_dnd::KittyDndEvent::DragDataRequested { mime_index } => {
+            let sequence = if pending_drag_out.active && mime_index == 0 {
+                kitty_dnd::send_drag_data_sequence(mime_index, &pending_drag_out.uri_list)
+            } else {
+                kitty_dnd::drag_data_error_sequence(mime_index, "ENOENT")
+            };
+            terminal.backend_mut().write_all(sequence.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
+        kitty_dnd::KittyDndEvent::DragStarted
+        | kitty_dnd::KittyDndEvent::DragAccepted { mime_index: _ }
+        | kitty_dnd::KittyDndEvent::DragActionChanged { operation: _ }
+        | kitty_dnd::KittyDndEvent::DragDropped => {}
+        kitty_dnd::KittyDndEvent::DragEnded { cancelled: _ } => {
+            pending_drag_out.reset();
+            app.clear_drag_state();
+        }
+        kitty_dnd::KittyDndEvent::DragError { message } => {
+            pending_drag_out.reset();
+            app.clear_drag_state();
+            if !message.is_empty() {
+                app.set_status_message(format!("Kitty DND drag failed: {message}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unsupported_drop_scheme_status(schemes: &[String]) -> String {
+    match schemes {
+        [] => "Drop contains no local files".to_string(),
+        [scheme] => format!("Unsupported drop URI scheme: {scheme}"),
+        schemes => format!("Unsupported drop URI schemes: {}", schemes.join(", ")),
+    }
+}
+
+#[cfg(unix)]
+fn choose_drop_op(operation: kitty_dnd::DndOperation) -> ClipOp {
+    match operation {
+        kitty_dnd::DndOperation::Copy => ClipOp::Yank,
+        kitty_dnd::DndOperation::Move | kitty_dnd::DndOperation::Either => ClipOp::Cut,
+    }
+}
+
+#[cfg(unix)]
+fn drop_op_to_dnd_operation(op: ClipOp) -> kitty_dnd::DndOperation {
+    match op {
+        ClipOp::Yank => kitty_dnd::DndOperation::Copy,
+        ClipOp::Cut => kitty_dnd::DndOperation::Move,
+    }
+}
+
+#[cfg(unix)]
+fn clip_op_to_drop_finish(op: ClipOp) -> kitty_dnd::DropFinish {
+    match op {
+        ClipOp::Yank => kitty_dnd::DropFinish::Copy,
+        ClipOp::Cut => kitty_dnd::DropFinish::Move,
+    }
+}
+
+#[cfg(unix)]
+fn drag_icon_sequence(label: &DragIconLabel) -> String {
+    let palette = ui::theme::palette();
+    if let Some(image) = kitty_dnd::render_drag_image(
+        &label.icon,
+        &label.text,
+        label.icon_color,
+        palette.elevated,
+        palette.text,
+    ) {
+        return kitty_dnd::present_drag_icon_png_sequence(image.width, image.height, &image.png);
+    }
+
+    kitty_dnd::present_drag_icon_sequence(&label.as_text())
+}
+
+#[cfg(unix)]
+impl DragIconLabel {
+    fn as_text(&self) -> String {
+        format!("{} {}", self.icon, self.text)
+    }
+}
+
+#[cfg(unix)]
+fn drag_icon_label(app: &App, paths: &[PathBuf]) -> DragIconLabel {
+    drag_icon_label_with(paths, |path| drag_icon_for_path(app, path))
+}
+
+#[cfg(unix)]
+fn drag_icon_label_with<F>(paths: &[PathBuf], mut icon_for_path: F) -> DragIconLabel
+where
+    F: FnMut(&Path) -> (String, ratatui::style::Color),
+{
+    const MAX_LABEL_CHARS: usize = 32;
+
+    let (icon, text) = match paths {
+        [path] => {
+            let (icon, icon_color) = icon_for_path(path);
+            let text = path
+                .file_name()
+                .map(|name| crate::app::sanitize_terminal_text(&name.to_string_lossy()))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "1 item".to_string());
+            return DragIconLabel {
+                icon,
+                text: truncate_drag_label_text(&text, MAX_LABEL_CHARS),
+                icon_color,
+            };
+        }
+        paths => (
+            drag_icon_for_many(paths, &mut icon_for_path),
+            format!("{} items", paths.len()),
+        ),
+    };
+    let text = truncate_drag_label_text(&text, MAX_LABEL_CHARS);
+    DragIconLabel {
+        icon: icon.0,
+        text,
+        icon_color: icon.1,
+    }
+}
+
+#[cfg(unix)]
+fn drag_icon_for_path(app: &App, path: &Path) -> (String, ratatui::style::Color) {
+    if let Some(entry) = app
+        .navigation
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+    {
+        let appearance = ui::theme::resolve_browser_entry(entry);
+        return (appearance.icon.to_string(), appearance.color);
+    }
+
+    let appearance = ui::theme::resolve_path(path, drag_entry_kind(path));
+    (appearance.icon.to_string(), appearance.color)
+}
+
+#[cfg(unix)]
+fn drag_entry_kind(path: &Path) -> EntryKind {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
+        _ => EntryKind::File,
+    }
+}
+
+#[cfg(unix)]
+fn drag_icon_for_many<F>(
+    paths: &[PathBuf],
+    icon_for_path: &mut F,
+) -> (String, ratatui::style::Color)
+where
+    F: FnMut(&Path) -> (String, ratatui::style::Color),
+{
+    const MULTIPLE_FOLDERS_ICON: &str = "󰉓";
+    const MULTIPLE_FILES_ICON: &str = "";
+
+    let Some((first, rest)) = paths.split_first() else {
+        let appearance = ui::theme::resolve_path(Path::new("item"), EntryKind::File);
+        return (MULTIPLE_FILES_ICON.to_string(), appearance.color);
+    };
+
+    let first_kind = drag_entry_kind(first);
+    let (first_icon, first_color) = icon_for_path(first);
+    let mut all_same_icon = true;
+    let mut all_directories = first_kind == EntryKind::Directory;
+
+    for path in rest {
+        let kind = drag_entry_kind(path);
+        let (icon, _) = icon_for_path(path);
+        all_same_icon &= icon == first_icon;
+        all_directories &= kind == EntryKind::Directory;
+    }
+
+    if all_same_icon {
+        (first_icon, first_color)
+    } else if all_directories {
+        let appearance = ui::theme::resolve_path(Path::new("folder"), EntryKind::Directory);
+        (MULTIPLE_FOLDERS_ICON.to_string(), appearance.color)
+    } else {
+        let appearance = ui::theme::resolve_path(Path::new("item"), EntryKind::File);
+        (MULTIPLE_FILES_ICON.to_string(), appearance.color)
+    }
+}
+
+#[cfg(unix)]
+fn truncate_drag_label_text(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        return label.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+
+    let mut truncated: String = label.chars().take(max_chars - 3).collect();
+    truncated.push_str("...");
+    truncated
+}
+
 fn event_poll_interval<I>(
     base_poll_interval: Duration,
     terminal_focused: bool,
@@ -426,8 +970,16 @@ mod tests {
         ACTIVE_SCROLL_POLL_INTERVAL, IDLE_POLL_INTERVAL, event_implies_terminal_focus,
         event_poll_interval,
     };
+    #[cfg(unix)]
+    use super::{drag_icon_label_with, unsupported_drop_scheme_status};
     use crossterm::event::Event;
     use std::time::Duration;
+    #[cfg(unix)]
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn event_poll_interval_stays_idle_while_terminal_is_unfocused() {
@@ -484,5 +1036,98 @@ mod tests {
         assert!(!event_implies_terminal_focus(&Event::FocusLost));
         assert!(!event_implies_terminal_focus(&Event::FocusGained));
         assert!(!event_implies_terminal_focus(&Event::Resize(80, 24)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_drop_scheme_status_names_one_or_many_schemes() {
+        assert_eq!(
+            unsupported_drop_scheme_status(&["trash".to_string()]),
+            "Unsupported drop URI scheme: trash"
+        );
+        assert_eq!(
+            unsupported_drop_scheme_status(&["trash".to_string(), "smb".to_string()]),
+            "Unsupported drop URI schemes: trash, smb"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drag_icon_label_uses_name_for_single_item_and_count_for_many() {
+        assert_eq!(
+            drag_icon_label_with(&[PathBuf::from("/tmp/report.pdf")], |_| (
+                "󰈙".to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            "󰈙 report.pdf"
+        );
+        assert_eq!(
+            drag_icon_label_with(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")], |_| (
+                "󰈔".to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            "󰈔 2 items"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drag_icon_label_uses_multi_item_icon_for_mixed_selection() {
+        let paths = [PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")];
+
+        assert_eq!(
+            drag_icon_label_with(&paths, |path| (
+                if path.ends_with("a") { "󰉋" } else { "󰈔" }.to_string(),
+                ratatui::style::Color::White,
+            ))
+            .as_text(),
+            " 2 items"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drag_icon_label_uses_multi_folder_icon_for_different_folder_icons() {
+        let root = std::env::temp_dir().join(format!(
+            "elio-drag-icons-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let first = root.join("src");
+        let second = root.join("docs");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+
+        let label = drag_icon_label_with(&[first, second], |path| {
+            let icon = if path.ends_with("src") {
+                "󰉋"
+            } else {
+                "󰉓"
+            };
+            (icon.to_string(), ratatui::style::Color::White)
+        })
+        .as_text();
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(label, "󰉓 2 items");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drag_icon_label_truncates_long_names() {
+        assert_eq!(
+            drag_icon_label_with(
+                &[PathBuf::from(
+                    "/tmp/abcdefghijklmnopqrstuvwxyz0123456789.txt"
+                )],
+                |_| ("󰈔".to_string(), ratatui::style::Color::White)
+            )
+            .as_text(),
+            "󰈔 abcdefghijklmnopqrstuvwxyz012..."
+        );
     }
 }

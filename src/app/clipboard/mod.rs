@@ -3,7 +3,7 @@ mod copy;
 use super::{
     App,
     jobs::PasteRequest,
-    state::{Clipboard, PasteProgress, QueuedPaste},
+    state::{Clipboard, PasteOrigin, PasteProgress, QueuedPaste},
     types::ClipOp,
 };
 use anyhow::Result;
@@ -103,6 +103,49 @@ impl App {
         Ok(())
     }
 
+    #[cfg(any(unix, test))]
+    pub(crate) fn drop_external_paths(&mut self, paths: Vec<PathBuf>, op: ClipOp) -> Result<bool> {
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|path| path.exists()).collect();
+        if paths.is_empty() {
+            self.status = "Drop contains no local files".to_string();
+            return Ok(false);
+        }
+        if op == ClipOp::Cut
+            && paths.iter().any(|path| {
+                path.file_name()
+                    .map(|file_name| self.navigation.cwd.join(file_name) == *path)
+                    .unwrap_or(false)
+            })
+        {
+            self.status = "Already here".to_string();
+            return Ok(false);
+        }
+
+        let request = QueuedPaste {
+            dest_dir: self.navigation.cwd.clone(),
+            paths,
+            op,
+            origin: PasteOrigin::Drop,
+        };
+        if paste_would_copy_directory_into_itself(&request) {
+            self.status = "Cannot drop a folder into itself".to_string();
+            return Ok(false);
+        }
+        if self.jobs.paste_progress.is_some() {
+            self.jobs.queued_pastes.push_back(request);
+            let pending = self.jobs.queued_pastes.len();
+            self.status = if pending == 1 {
+                "Queued drop (1 pending)".to_string()
+            } else {
+                format!("Queued drop ({pending} pending)")
+            };
+        } else {
+            self.start_paste_request(request);
+            self.status = "Dropping files…".to_string();
+        }
+        Ok(true)
+    }
+
     pub(super) fn clear_queued_pastes(&mut self) -> usize {
         let queued = self.jobs.queued_pastes.len();
         self.jobs.queued_pastes.clear();
@@ -126,6 +169,7 @@ impl App {
             dest_dir: self.navigation.cwd.clone(),
             paths: clipboard.paths,
             op: clipboard.op,
+            origin: PasteOrigin::Clipboard,
         })
     }
 
@@ -136,6 +180,7 @@ impl App {
             completed: 0,
             total: request.paths.len(),
             op: request.op,
+            origin: request.origin.clone(),
         });
         self.jobs.paste_dest_dir = Some(request.dest_dir.clone());
 

@@ -322,6 +322,8 @@ pub(in crate::app) struct PasteBuild {
     pub(in crate::app) done: bool,
     /// Populated only when `done = true`.
     pub(in crate::app) status: Option<String>,
+    /// Destination paths actually written by the completed paste/drop.
+    pub(in crate::app) destination_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]

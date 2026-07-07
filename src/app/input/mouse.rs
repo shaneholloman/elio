@@ -67,6 +67,7 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.clear_drag_state();
                 self.update_wheel_target_from_position(mouse.column, mouse.row);
                 if let Some(rect) = self.input.frame_state.back_button
                     && rect_contains(rect, mouse.column, mouse.row)
@@ -123,6 +124,7 @@ impl App {
                     else {
                         return Ok(());
                     };
+                    self.remember_drag_candidate(path.clone());
                     self.select_index(hit.index);
                     if self.is_double_click(&path) {
                         if self.chooser_mode {
@@ -130,12 +132,16 @@ impl App {
                         } else {
                             self.open_entry_at_index(hit.index)?;
                         }
+                        self.suppress_drag_until_button_up();
                     }
                     self.input.last_click = Some(ClickState {
                         path,
                         at: Instant::now(),
                     });
                 }
+            }
+            MouseEventKind::Up(_) => {
+                self.clear_drag_state();
             }
             MouseEventKind::ScrollDown => {
                 self.handle_wheel_event(mouse, 1);
