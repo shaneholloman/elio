@@ -128,6 +128,61 @@ class = "config"
 icon = ""
 color = "#7db0ff"
 
+[extensions.csv]
+class = "data"
+icon = "󱎏"
+color = "#4eb274"
+
+[extensions.tsv]
+class = "data"
+icon = "󱎏"
+color = "#4eb274"
+
+[extensions.ipynb]
+class = "document"
+icon = ""
+color = "#ffb86b"
+
+[extensions.o]
+class = "file"
+icon = ""
+color = "#7aaeff"
+
+[extensions.obj]
+class = "file"
+icon = ""
+color = "#7aaeff"
+
+[extensions.a]
+class = "file"
+icon = ""
+color = "#d3aa7c"
+
+[extensions.lib]
+class = "file"
+icon = ""
+color = "#d3aa7c"
+
+[extensions.so]
+class = "file"
+icon = ""
+color = "#d3aa7c"
+
+[extensions.dylib]
+class = "file"
+icon = ""
+color = "#d3aa7c"
+
+[extensions.dll]
+class = "file"
+icon = ""
+color = "#d3aa7c"
+
+[extensions.wasm]
+class = "file"
+icon = ""
+color = "#b38cff"
+
 [extensions.desktop]
 class = "config"
 icon = "󰍹"
@@ -583,6 +638,16 @@ class = "config"
 icon = ""
 color = "#a884ff"
 
+[files."angular.json"]
+class = "config"
+icon = "󰚲"
+color = "#ef4444"
+
+[files."ng-package.json"]
+class = "config"
+icon = "󰚲"
+color = "#ef4444"
+
 [files."Dockerfile"]
 class = "config"
 icon = "󰡨"
@@ -1033,6 +1098,10 @@ color = "#5ba8ff"
 [directories.".astro"]
 icon = ""
 color = "#5ba8ff"
+
+[directories.".angular"]
+icon = "󰚲"
+color = "#ef4444"
 
 [directories."public"]
 icon = "󰉋"

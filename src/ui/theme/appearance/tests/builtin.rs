@@ -120,11 +120,60 @@ fn default_theme_assigns_specific_icons_for_common_dev_paths() {
     assert_eq!(json.icon, "");
     assert_eq!(json.color, rgb(125, 176, 255));
 
+    for path in ["customers.csv", "orders.tsv"] {
+        let table = theme.resolve(Path::new(path), EntryKind::File);
+        assert_eq!(table.class, FileClass::Data, "{path}");
+        assert_eq!(table.icon, "󱎏", "{path}");
+        assert_eq!(table.color, rgb(78, 178, 116), "{path}");
+    }
+
+    let notebook = theme.resolve(Path::new("analysis.ipynb"), EntryKind::File);
+    assert_eq!(notebook.class, FileClass::Document);
+    assert_eq!(notebook.icon, "");
+    assert_eq!(notebook.color, rgb(255, 184, 107));
+
+    for path in ["main.o", "main.obj"] {
+        let object = theme.resolve(Path::new(path), EntryKind::File);
+        assert_eq!(object.class, FileClass::File, "{path}");
+        assert_eq!(object.icon, "", "{path}");
+        assert_eq!(object.color, rgb(122, 174, 255), "{path}");
+    }
+
+    for path in [
+        "libapp.a",
+        "app.lib",
+        "libapp.so",
+        "libapp.dylib",
+        "app.dll",
+    ] {
+        let library = theme.resolve(Path::new(path), EntryKind::File);
+        assert_eq!(library.class, FileClass::File, "{path}");
+        assert_eq!(library.icon, "", "{path}");
+        assert_eq!(library.color, rgb(211, 170, 124), "{path}");
+    }
+
+    let wasm = theme.resolve(Path::new("module.wasm"), EntryKind::File);
+    assert_eq!(wasm.class, FileClass::File);
+    assert_eq!(wasm.icon, "");
+    assert_eq!(wasm.color, rgb(179, 140, 255));
+
     let package = theme.resolve(Path::new("package.json"), EntryKind::File);
     assert_eq!(package.icon, "󰏗");
 
+    for path in ["angular.json", "ng-package.json"] {
+        let angular = theme.resolve(Path::new(path), EntryKind::File);
+        assert_eq!(angular.class, FileClass::Config, "{path}");
+        assert_eq!(angular.icon, "󰚲", "{path}");
+        assert_eq!(angular.color, rgb(239, 68, 68), "{path}");
+    }
+
     let modules = theme.resolve(Path::new("node_modules"), EntryKind::Directory);
     assert_eq!(modules.icon, "󰏗");
+
+    let angular_cache = theme.resolve(Path::new(".angular"), EntryKind::Directory);
+    assert_eq!(angular_cache.class, FileClass::Directory);
+    assert_eq!(angular_cache.icon, "󰚲");
+    assert_eq!(angular_cache.color, rgb(239, 68, 68));
 
     let docs = theme.resolve(Path::new("docs"), EntryKind::Directory);
     assert_eq!(docs.class, FileClass::Directory);
