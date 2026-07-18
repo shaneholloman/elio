@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.10.0
+%global fallback_version 1.11.0
 %global fallback_release 1
 
 Name:           elio
@@ -53,6 +53,12 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Jul 18 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.11.0-1
+- Add archive creation for zip, 7z, and tar variants with password prompts
+- Add Kitty drag-and-drop, configurable open rules, and editor-based rename
+- Add Markdown frontmatter, Quarto, Astro, Jupyter notebook, subtitle, and Coccinelle previews
+- Improve themes and overlays, and fix tmux clipboard copy and file type icons
+
 * Tue Jun 30 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.10.0-1
 - Add native archive extraction for zip, 7z, tar variants, and rar archives
 - Add configurable Go To entries and a current-directory filter

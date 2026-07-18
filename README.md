@@ -15,13 +15,15 @@ Snappy, batteries-included terminal file manager with rich previews, inline imag
 
 - **Three-pane layout** — Places, Files, and Preview side by side
 - **Rich previews** — text, code, documents, archives, media, and more; see [Preview Coverage](#preview-coverage)
+- **Archive management** — extract and create common archive formats
 - **Inline images** — rendered directly in supported terminals
 - **Customizable Places and devices** — pinned folders plus auto-detected drives and mounts
 - **Quick actions** — Go-to, Open With, and copy-to-clipboard
 - **Trash management** — trash, restore, or permanently delete files
 - **Keyboard and mouse navigation** — browse comfortably either way
+- **Kitty drag and drop** — drop files into elio and drag them out in Kitty 0.47+
 - **Grid and list views** — switch with `v`, zoom the grid with `Ctrl++` / `Ctrl+-`
-- **Fuzzy search** — find folders and files quickly
+- **Fuzzy find** — find folders and files quickly
 - **Zoxide jumps** — jump to frequent directories from your zoxide history
 - **Shell integration** — install cd-on-exit wrappers for bash, zsh, fish, and Nushell
 - **Theming** — full palette and file-class control via `theme.toml`
